@@ -312,7 +312,7 @@ class DaCeIRBuilder(eve.NodeTranslator):
             mask=node.mask, body=self.visit(node.body, symbol_collector=symbol_collector, **kwargs)
         )
 
-    def visit_VariableKOffset(self, node: oir.VariableKOffset, **kwargs):
+    def visit_VariableKOffset(self, node: oir.VariableKOffset, **kwargs: Any) -> dcir.VariableKOffset:
         return dcir.VariableKOffset(k=self.visit(node.k, **kwargs))
 
     def visit_LocalScalar(self, node: oir.LocalScalar, **kwargs: Any) -> dcir.LocalScalarDecl:
@@ -327,9 +327,11 @@ class DaCeIRBuilder(eve.NodeTranslator):
         var_offset_fields: Set[eve.SymbolRef],
         **kwargs: Any,
     ) -> Union[dcir.IndexAccess, dcir.ScalarAccess]:
-        res: Union[dcir.IndexAccess, dcir.ScalarAccess]
         if node.name in var_offset_fields:
-            res = dcir.IndexAccess(
+            if is_target:
+                targets.add(node.name)
+
+            return dcir.IndexAccess(
                 name=node.name + "__",
                 offset=self.visit(
                     node.offset,
@@ -341,20 +343,20 @@ class DaCeIRBuilder(eve.NodeTranslator):
                 data_index=node.data_index,
                 dtype=node.dtype,
             )
-        else:
-            is_target = is_target or (
-                node.name in targets and node.offset == common.CartesianOffset.zero()
-            )
-            name = get_tasklet_symbol(node.name, node.offset, is_target=is_target)
-            if node.data_index:
-                res = dcir.IndexAccess(
-                    name=name, offset=None, data_index=node.data_index, dtype=node.dtype
-                )
-            else:
-                res = dcir.ScalarAccess(name=name, dtype=node.dtype)
+
+        is_target = is_target or (
+            node.name in targets and node.offset == common.CartesianOffset.zero()
+        )
+        name = get_tasklet_symbol(node.name, node.offset, is_target=is_target)
         if is_target:
-            targets.add(node.name)
-        return res
+                targets.add(node.name)
+
+        if node.data_index:
+            return dcir.IndexAccess(
+                name=name, offset=None, data_index=node.data_index, dtype=node.dtype
+            )
+
+        return dcir.ScalarAccess(name=name, dtype=node.dtype)
 
     def visit_ScalarAccess(
         self,
