@@ -88,6 +88,29 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
             self.state = self.state_stack[-1]
             del self.state_stack[-1]
 
+        def add_condition(self, condition: str) -> Tuple[dace.SDFGState, dace.SDFGState, dace.SDFGState, dace.SDFGState]:
+            """ Inserts a condition state after the current self.state. Returns a tuple of
+            (condition_state, true_state, false_state, merge_state) and sets self.state = merge_state"""
+            merge_state = self.sdfg.add_state()
+            for edge in self.sdfg.out_edges(self.state):
+                self.sdfg.remove_edge(edge)
+                self.sdfg.add_edge(merge_state, edge.dst, edge.data)
+            self.state_stack.append(merge_state)
+
+            condition_state = self.sdfg.add_state()
+            self.sdfg.add_edge(self.state, condition_state, dace.InterstateEdge())
+            self.state = merge_state
+
+            true_state = self.sdfg.add_state()
+            self.sdfg.add_edge(condition_state, true_state, dace.InterstateEdge(condition))
+            false_state = self.sdfg.add_state()
+            self.sdfg.add_edge(condition_state, false_state, dace.InterstateEdge("not (%s)" % condition))
+
+            self.sdfg.add_edge(true_state, merge_state, dace.InterstateEdge())
+            self.sdfg.add_edge(false_state, merge_state, dace.InterstateEdge())
+
+            return (condition_state, true_state, false_state, merge_state)
+
     def visit_Memlet(
         self,
         node: dcir.Memlet,
