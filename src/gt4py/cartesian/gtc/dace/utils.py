@@ -60,7 +60,7 @@ def replace_strides(arrays, get_layout_map):
     return symbol_mapping
 
 
-def get_tasklet_symbol(name, offset, is_target):
+def get_tasklet_symbol(name, offset, is_target: bool):
     if is_target:
         return f"__{name}"
 
