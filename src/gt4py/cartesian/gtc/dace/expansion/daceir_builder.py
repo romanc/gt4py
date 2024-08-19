@@ -74,7 +74,7 @@ def _access_iter(node: oir.HorizontalExecution, get_outputs: bool):
     ).unique(key=lambda x: x[2])
 
 
-def _get_tasklet_inout_memlets(node: oir.HorizontalExecution, *, get_outputs, global_ctx, **kwargs):
+def _get_tasklet_inout_memlets(node: oir.HorizontalExecution, *, get_outputs: bool, global_ctx: "DaCeIRBuilder.GlobalContext", **kwargs):
     access_infos = compute_dcir_access_infos(
         node,
         block_extents=global_ctx.library_node.get_extents,
@@ -165,7 +165,7 @@ class DaCeIRBuilder(eve.NodeTranslator):
             symbol_collector: "DaCeIRBuilder.SymbolCollector",
         ) -> List[dcir.FieldDecl]:
             return [
-                self._get_dcir_decl(field, access_info, symbol_collector=symbol_collector)
+                self._get_dcir_decl(field, access_info, symbol_collector)
                 for field, access_info in access_infos.items()
             ]
 
@@ -347,7 +347,7 @@ class DaCeIRBuilder(eve.NodeTranslator):
         is_target = is_target or (
             node.name in targets and node.offset == common.CartesianOffset.zero()
         )
-        name = get_tasklet_symbol(node.name, node.offset, is_target=is_target)
+        name = get_tasklet_symbol(node.name, node.offset, is_target)
         if is_target:
                 targets.add(node.name)
 
@@ -857,7 +857,7 @@ class DaCeIRBuilder(eve.NodeTranslator):
 
         read_fields = set(memlet.field for memlet in read_memlets)
         write_fields = set(memlet.field for memlet in write_memlets)
-        res = dcir.NestedSDFG(
+        return dcir.NestedSDFG(
             label=global_ctx.library_node.label,
             states=self.to_state(computations, grid_subset=iteration_ctx.grid_subset),
             field_decls=field_decls,
@@ -865,5 +865,3 @@ class DaCeIRBuilder(eve.NodeTranslator):
             write_memlets=[memlet for memlet in field_memlets if memlet.field in write_fields],
             symbol_decls=list(symbol_collector.symbol_decls.values()),
         )
-
-        return res
