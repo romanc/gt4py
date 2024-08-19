@@ -406,7 +406,6 @@ class DaCeIRBuilder(eve.NodeTranslator):
         global_ctx: "DaCeIRBuilder.GlobalContext",
         iteration_ctx: "DaCeIRBuilder.IterationContext",
         symbol_collector: "DaCeIRBuilder.SymbolCollector",
-        loop_order,
         k_interval,
         **kwargs,
     ):
