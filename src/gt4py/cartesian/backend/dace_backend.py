@@ -61,10 +61,6 @@ if TYPE_CHECKING:
     from gt4py.cartesian.stencil_object import StencilObject
 
 
-def _serialize_sdfg(sdfg: dace.SDFG):
-    return dumps(sdfg)
-
-
 def _specialize_transient_strides(sdfg: dace.SDFG, layout_map):
     repldict = replace_strides(
         [array for array in sdfg.arrays.values() if array.transient], layout_map
