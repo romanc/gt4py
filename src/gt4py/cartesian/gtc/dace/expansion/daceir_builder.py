@@ -200,8 +200,7 @@ class DaCeIRBuilder(eve.NodeTranslator):
 
         @classmethod
         def init(cls, *args, **kwargs):
-            res = cls(*args, parent=None, **kwargs)
-            return res
+            return cls(*args, parent=None, **kwargs)
 
         def push_axes_extents(self, axes_extents) -> "DaCeIRBuilder.IterationContext":
             res = self.grid_subset
