@@ -398,7 +398,7 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         if sdfg_ctx is not None and node_ctx is not None:
             nsdfg = sdfg_ctx.state.add_nested_sdfg(
                 sdfg=sdfg,
-                parent=None,
+                parent=sdfg_ctx.sdfg,
                 inputs=node.input_connectors,
                 outputs=node.output_connectors,
                 symbol_mapping=symbol_mapping,

@@ -303,6 +303,7 @@ class DaCeIRBuilder(eve.NodeTranslator):
                     symbol_collector.add_symbol(axis.iteration_symbol())
                     if bound.level == common.LevelMarker.END:
                         symbol_collector.add_symbol(axis.domain_symbol())
+
         return dcir.HorizontalRestriction(
             mask=node.mask, body=self.visit(node.body, symbol_collector=symbol_collector, **kwargs)
         )
@@ -409,8 +410,38 @@ class DaCeIRBuilder(eve.NodeTranslator):
         k_interval,
         **kwargs,
     ):
+        stages_idx = next(
+            idx
+            for idx, item in enumerate(global_ctx.library_node.expansion_specification)
+            if isinstance(item, Stages)
+        )
+        expansion_items = global_ctx.library_node.expansion_specification[stages_idx + 1 :]
+
         # skip type checking due to https://github.com/python/mypy/issues/5485
         extent = global_ctx.library_node.get_extents(node)  # type: ignore
+        iteration_ctx = iteration_ctx.push_axes_extents(
+            {k: v for k, v in zip(dcir.Axis.dims_horizontal(), extent)}
+        )
+        iteration_ctx = iteration_ctx.push_expansion_items(expansion_items)
+
+        assert iteration_ctx.grid_subset == dcir.GridSubset.single_gridpoint()
+
+        tasklet_read_memlets = _get_tasklet_inout_memlets(
+            node,
+            get_outputs=False,
+            global_ctx=global_ctx,
+            grid_subset=iteration_ctx.grid_subset,
+            k_interval=k_interval,
+        )
+
+        tasklet_write_memlets = _get_tasklet_inout_memlets(
+            node,
+            get_outputs=True,
+            global_ctx=global_ctx,
+            grid_subset=iteration_ctx.grid_subset,
+            k_interval=k_interval,
+        )
+
         decls = [self.visit(decl, **kwargs) for decl in node.declarations]
         targets: Set[str] = set()
         stmts = [
@@ -424,41 +455,11 @@ class DaCeIRBuilder(eve.NodeTranslator):
             for stmt in node.body
         ]
 
-        stages_idx = next(
-            idx
-            for idx, item in enumerate(global_ctx.library_node.expansion_specification)
-            if isinstance(item, Stages)
-        )
-        expansion_items = global_ctx.library_node.expansion_specification[stages_idx + 1 :]
-
-        iteration_ctx = iteration_ctx.push_axes_extents(
-            {k: v for k, v in zip(dcir.Axis.dims_horizontal(), extent)}
-        )
-        iteration_ctx = iteration_ctx.push_expansion_items(expansion_items)
-
-        assert iteration_ctx.grid_subset == dcir.GridSubset.single_gridpoint()
-
-        read_memlets = _get_tasklet_inout_memlets(
-            node,
-            get_outputs=False,
-            global_ctx=global_ctx,
-            grid_subset=iteration_ctx.grid_subset,
-            k_interval=k_interval,
+        tasklet = dcir.Tasklet(
+            decls=decls, stmts=stmts, read_memlets=tasklet_read_memlets, write_memlets=tasklet_write_memlets
         )
 
-        write_memlets = _get_tasklet_inout_memlets(
-            node,
-            get_outputs=True,
-            global_ctx=global_ctx,
-            grid_subset=iteration_ctx.grid_subset,
-            k_interval=k_interval,
-        )
-
-        dcir_node = dcir.Tasklet(
-            decls=decls, stmts=stmts, read_memlets=read_memlets, write_memlets=write_memlets
-        )
-
-        for memlet in [*read_memlets, *write_memlets]:
+        for memlet in [*tasklet_read_memlets, *tasklet_write_memlets]:
             """
             This loop handles the special case of a tasklet performing array access.
             The memlet should pass the full array shape (no tiling) and
@@ -480,7 +481,7 @@ class DaCeIRBuilder(eve.NodeTranslator):
             ]
             if len(memlet_data_index) < array_ndims:
                 reshape_memlet = False
-                for access_node in dcir_node.walk_values().if_isinstance(dcir.IndexAccess):
+                for access_node in tasklet.walk_values().if_isinstance(dcir.IndexAccess):
                     if access_node.data_index and access_node.name == memlet.connector:
                         access_node.data_index = memlet_data_index + access_node.data_index
                         assert len(access_node.data_index) == array_ndims
@@ -492,6 +493,27 @@ class DaCeIRBuilder(eve.NodeTranslator):
                     # set full shape on memlet
                     memlet.access_info = global_ctx.library_node.access_infos[memlet.field]
 
+        subgraph_states = self.to_state(tasklet, grid_subset=iteration_ctx.grid_subset)
+        read_memlets, write_memlets, field_memlets = union_inout_memlets(subgraph_states)
+        read_fields = set(memlet.field for memlet in read_memlets)
+        write_fields = set(memlet.field for memlet in write_memlets)
+
+        # add memlet symbols used for array indexing
+        for memlet in field_memlets:
+            for sym in memlet.access_info.grid_subset.free_symbols:
+                symbol_collector.add_symbol(sym)
+
+        dcir_node = dcir.NestedSDFG(
+            label="my_sub_sdfg_with_tasklet",
+            states=subgraph_states,
+            read_memlets=[memlet for memlet in field_memlets if memlet.field in read_fields],
+            write_memlets=[memlet for memlet in field_memlets if memlet.field in write_fields],
+            field_decls=global_ctx.get_dcir_decls(
+                global_ctx.library_node.access_infos, symbol_collector=symbol_collector
+            ),
+            symbol_decls=list(symbol_collector.symbol_decls.values()),
+        )
+
         for item in reversed(expansion_items):
             iteration_ctx = iteration_ctx.pop()
             dcir_node = self._process_iteration_item(
@@ -502,8 +524,10 @@ class DaCeIRBuilder(eve.NodeTranslator):
                 symbol_collector=symbol_collector,
                 **kwargs,
             )
+
         # pop stages context (pushed with push_grid_subset)
         iteration_ctx.pop()
+
         return dcir_node
 
     def visit_VerticalLoopSection(
@@ -613,7 +637,7 @@ class DaCeIRBuilder(eve.NodeTranslator):
         scope_nodes,
         item: Map,
         *,
-        global_ctx,
+        global_ctx: "DaCeIRBuilder.GlobalContext",
         iteration_ctx: "DaCeIRBuilder.IterationContext",
         symbol_collector: "DaCeIRBuilder.SymbolCollector",
         **kwargs,
@@ -711,7 +735,6 @@ class DaCeIRBuilder(eve.NodeTranslator):
         scope_nodes,
         item: Loop,
         *,
-        global_ctx,
         iteration_ctx: "DaCeIRBuilder.IterationContext",
         symbol_collector: "DaCeIRBuilder.SymbolCollector",
         **kwargs,
