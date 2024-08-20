@@ -455,46 +455,51 @@ class DaCeIRBuilder(eve.NodeTranslator):
             for stmt in node.body
         ]
 
-        tasklet = dcir.Tasklet(
-            decls=decls, stmts=stmts, read_memlets=tasklet_read_memlets, write_memlets=tasklet_write_memlets
-        )
+        computations = []
 
-        for memlet in [*tasklet_read_memlets, *tasklet_write_memlets]:
-            """
-            This loop handles the special case of a tasklet performing array access.
-            The memlet should pass the full array shape (no tiling) and
-            the tasklet expression for array access should use all explicit indexes.
-            """
-            array_ndims = len(global_ctx.arrays[memlet.field].shape)
-            field_decl = global_ctx.library_node.field_decls[memlet.field]
-            # calculate array subset on original memlet
-            memlet_subset = make_dace_subset(
-                global_ctx.library_node.access_infos[memlet.field],
-                memlet.access_info,
-                field_decl.data_dims,
+        if len(stmts) == 1 and isinstance(stmts[0], dcir.MaskStmt):
+            tasklet = dcir.Tasklet(
+                decls=decls, stmts=stmts[0].body, read_memlets=tasklet_read_memlets, write_memlets=tasklet_write_memlets
             )
-            # select index values for single-point grid access
-            memlet_data_index = [
-                dcir.Literal(value=str(dim_range[0]), dtype=common.DataType.INT32)
-                for dim_range, dim_size in zip(memlet_subset, memlet_subset.size())
-                if dim_size == 1
-            ]
-            if len(memlet_data_index) < array_ndims:
-                reshape_memlet = False
-                for access_node in tasklet.walk_values().if_isinstance(dcir.IndexAccess):
-                    if access_node.data_index and access_node.name == memlet.connector:
-                        access_node.data_index = memlet_data_index + access_node.data_index
-                        assert len(access_node.data_index) == array_ndims
-                        reshape_memlet = True
-                if reshape_memlet:
-                    # ensure that memlet symbols used for array indexing are defined in context
-                    for sym in memlet.access_info.grid_subset.free_symbols:
-                        symbol_collector.add_symbol(sym)
-                    # set full shape on memlet
-                    memlet.access_info = global_ctx.library_node.access_infos[memlet.field]
 
-        subgraph_states = self.to_state(tasklet, grid_subset=iteration_ctx.grid_subset)
-        read_memlets, write_memlets, field_memlets = union_inout_memlets(subgraph_states)
+            for memlet in [*tasklet_read_memlets, *tasklet_write_memlets]:
+                """
+                This loop handles the special case of a tasklet performing array access.
+                The memlet should pass the full array shape (no tiling) and
+                the tasklet expression for array access should use all explicit indexes.
+                """
+                array_ndims = len(global_ctx.arrays[memlet.field].shape)
+                field_decl = global_ctx.library_node.field_decls[memlet.field]
+                # calculate array subset on original memlet
+                memlet_subset = make_dace_subset(
+                    global_ctx.library_node.access_infos[memlet.field],
+                    memlet.access_info,
+                    field_decl.data_dims,
+                )
+                # select index values for single-point grid access
+                memlet_data_index = [
+                    dcir.Literal(value=str(dim_range[0]), dtype=common.DataType.INT32)
+                    for dim_range, dim_size in zip(memlet_subset, memlet_subset.size())
+                    if dim_size == 1
+                ]
+                if len(memlet_data_index) < array_ndims:
+                    reshape_memlet = False
+                    for access_node in tasklet.walk_values().if_isinstance(dcir.IndexAccess):
+                        if access_node.data_index and access_node.name == memlet.connector:
+                            access_node.data_index = memlet_data_index + access_node.data_index
+                            assert len(access_node.data_index) == array_ndims
+                            reshape_memlet = True
+                    if reshape_memlet:
+                        # ensure that memlet symbols used for array indexing are defined in context
+                        for sym in memlet.access_info.grid_subset.free_symbols:
+                            symbol_collector.add_symbol(sym)
+                        # set full shape on memlet
+                        memlet.access_info = global_ctx.library_node.access_infos[memlet.field]
+            
+            computations.append(dcir.Condition(condition=stmts[0].mask, true_state=[tasklet]))
+
+        # subgraph_states = self.to_state(computations, grid_subset=iteration_ctx.grid_subset)
+        read_memlets, write_memlets, field_memlets = union_inout_memlets(computations)
         read_fields = set(memlet.field for memlet in read_memlets)
         write_fields = set(memlet.field for memlet in write_memlets)
 
@@ -505,7 +510,7 @@ class DaCeIRBuilder(eve.NodeTranslator):
 
         dcir_node = dcir.NestedSDFG(
             label="my_sub_sdfg_with_tasklet",
-            states=subgraph_states,
+            states=computations,
             read_memlets=[memlet for memlet in field_memlets if memlet.field in read_fields],
             write_memlets=[memlet for memlet in field_memlets if memlet.field in write_fields],
             field_decls=global_ctx.get_dcir_decls(
@@ -625,7 +630,7 @@ class DaCeIRBuilder(eve.NodeTranslator):
 
     def to_state(self, nodes, *, grid_subset: dcir.GridSubset):
         nodes = flatten_list(nodes)
-        if all(isinstance(n, (dcir.ComputationState, dcir.DomainLoop)) for n in nodes):
+        if all(isinstance(n, (dcir.ComputationState, dcir.DomainLoop, dcir.Condition)) for n in nodes):
             return nodes
         elif all(isinstance(n, (dcir.NestedSDFG, dcir.DomainMap, dcir.Tasklet)) for n in nodes):
             return [dcir.ComputationState(computations=nodes, grid_subset=grid_subset)]

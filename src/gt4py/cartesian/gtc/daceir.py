@@ -848,10 +848,15 @@ class Tasklet(ComputationNode, IterationNode, eve.SymbolTableTrait):
     grid_subset: GridSubset = GridSubset.single_gridpoint()
 
 
+class Condition(eve.Node):
+    condition: Expr
+    true_state: List[Tasklet]
+    false_state: Optional[List[Tasklet]] = []
+
 class DomainMap(ComputationNode, IterationNode):
     index_ranges: List[Range]
     schedule: MapSchedule
-    computations: List[Union[Tasklet, DomainMap, NestedSDFG]]
+    computations: List[Union[Tasklet, Condition, DomainMap, NestedSDFG]]
 
 
 class ComputationState(IterationNode):
@@ -868,7 +873,7 @@ class NestedSDFG(ComputationNode, eve.SymbolTableTrait):
     label: eve.Coerced[eve.SymbolRef]
     field_decls: List[FieldDecl]
     symbol_decls: List[SymbolDecl]
-    states: List[Union[DomainLoop, ComputationState]]
+    states: List[Union[Condition, DomainLoop, ComputationState]]
 
 
 # There are circular type references with string placeholders. These statements let datamodels resolve those.
