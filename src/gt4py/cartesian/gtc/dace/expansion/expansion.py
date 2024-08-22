@@ -81,12 +81,14 @@ class StencilComputationExpansion(dace.library.ExpandTransformation):
 
         """
         # change connector names
+        input_prefix = "__in_"
         for in_edge in parent_state.in_edges(node):
-            assert in_edge.dst_conn.startswith("__in_")
-            in_edge.dst_conn = in_edge.dst_conn[len("__in_") :]
+            assert in_edge.dst_conn.startswith(input_prefix)
+            in_edge.dst_conn = in_edge.dst_conn.removeprefix(input_prefix)
+        output_prefix = "__out_"
         for out_edge in parent_state.out_edges(node):
-            assert out_edge.src_conn.startswith("__out_")
-            out_edge.src_conn = out_edge.src_conn[len("__out_") :]
+            assert out_edge.src_conn.startswith(output_prefix)
+            out_edge.src_conn = out_edge.src_conn.removeprefix(output_prefix)
 
         # union input and output subsets
         subsets = {}
