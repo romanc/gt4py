@@ -69,6 +69,7 @@ class AssignStmt(common.AssignStmt[Union[ScalarAccess, FieldAccess], Expr], Stmt
 class MaskStmt(Stmt):
     mask: Expr
     body: List[Stmt]
+    temp_field_assignment: Optional[AssignStmt] = None
 
     @datamodels.validator("mask")
     def mask_is_boolean_field_expr(self, attribute: datamodels.Attribute, v: Expr) -> None:

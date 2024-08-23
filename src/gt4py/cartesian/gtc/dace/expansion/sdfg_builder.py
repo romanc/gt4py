@@ -190,7 +190,7 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         # - use the local variable as condition
         # -> this will fix the symbol issues and make it compatible for the numpy backend again
         #   -> minor changes in the numpy backend codegen are needed
-        code = TaskletCodegen().visit(node.condition, is_target=False, **kwargs)
+        code = TaskletCodegen().visit(node.condition, is_target=False, symtable=symtable, sdfg_ctx=sdfg_ctx, **kwargs)
         sdfg_ctx.add_condition(code)
         assert sdfg_ctx.state.label == "condition_true"
 
@@ -353,6 +353,9 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
             node_ctx = StencilComputationSDFGBuilder.NodeContext(
                 input_node_and_conns=read_acc_and_conn, output_node_and_conns=write_acc_and_conn
             )
+            if "node_ctx" in kwargs:
+                # delete parent node_ctx if passed down
+                del kwargs["node_ctx"]
             self.visit(computation, sdfg_ctx=sdfg_ctx, node_ctx=node_ctx, **kwargs)
 
     def visit_FieldDecl(
@@ -407,7 +410,7 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         symbol_mapping = {decl.name: decl.to_dace_symbol() for decl in node.symbol_decls}
 
         for computation_state in node.states:
-            self.visit(computation_state, sdfg_ctx=inner_sdfg_ctx, symtable=symtable, **kwargs)
+            self.visit(computation_state, sdfg_ctx=inner_sdfg_ctx, symtable=symtable, node_ctx=node_ctx, **kwargs)
 
         if sdfg_ctx is not None and node_ctx is not None:
             nsdfg = sdfg_ctx.state.add_nested_sdfg(

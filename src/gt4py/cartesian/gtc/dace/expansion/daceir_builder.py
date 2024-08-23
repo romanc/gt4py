@@ -407,20 +407,36 @@ class DaCeIRBuilder(eve.NodeTranslator):
         k_interval,
         **kwargs,
     ):
+        # Let's only look at the one example from the issue for now
+        # Once this works, we can generalize
+
+        if not len(node.body) == 1 and not isinstance(node.body[0], oir.MaskStmt):
+            # Guard against stuff that we don't expect
+            assert False
+
         # skip type checking due to https://github.com/python/mypy/issues/5485
         extent = global_ctx.library_node.get_extents(node)  # type: ignore
         decls = [self.visit(decl, **kwargs) for decl in node.declarations]
         targets: Set[str] = set()
-        stmts = [
-            self.visit(
-                stmt,
-                targets=targets,
-                global_ctx=global_ctx,
-                symbol_collector=symbol_collector,
-                **kwargs,
-            )
-            for stmt in node.body
-        ]
+        # stmts = [
+        #     self.visit(
+        #         stmt,
+        #         targets=targets,
+        #         global_ctx=global_ctx,
+        #         symbol_collector=symbol_collector,
+        #         **kwargs,
+        #     )
+        #     for stmt in node.body
+        # ]
+
+        mask_statement: dcir.MaskStmt = self.visit(node.body[0], targets=targets, global_ctx=global_ctx, symbol_collector=symbol_collector, **kwargs)
+
+        # TODO Fixup the MaskStatement:
+        # - if oirnode.MaskStmt.temp_field_assignment
+        #  - create a tasklet
+        #  - assign the field access to a scalar variable
+        #  - output the scalar
+        #  - bridge scalar output as symbol into Condition
 
         stages_idx = next(
             idx
@@ -453,7 +469,7 @@ class DaCeIRBuilder(eve.NodeTranslator):
         )
 
         tasklet = dcir.Tasklet(
-            decls=decls, stmts=stmts, read_memlets=read_memlets, write_memlets=write_memlets
+            decls=decls, stmts=mask_statement.body, read_memlets=read_memlets, write_memlets=write_memlets
         )
 
         for memlet in [*read_memlets, *write_memlets]:
@@ -493,8 +509,10 @@ class DaCeIRBuilder(eve.NodeTranslator):
         # wrap tasklet in a computation state
         computation_state = self.to_state(tasklet, grid_subset=iteration_ctx.grid_subset)
 
+        condition = dcir.Condition(condition=mask_statement.mask, true_state=computation_state)
+
         # wrap computation state in an (empty) nested SDFG
-        dcir_node = self.to_dataflow(computation_state, global_ctx=global_ctx, symbol_collector=symbol_collector)
+        dcir_node = self.to_dataflow(condition, global_ctx=global_ctx, symbol_collector=symbol_collector)
 
         for item in reversed(expansion_items):
             iteration_ctx = iteration_ctx.pop()
@@ -575,7 +593,7 @@ class DaCeIRBuilder(eve.NodeTranslator):
         nodes = flatten_list(nodes)
         if all(isinstance(n, (dcir.NestedSDFG, dcir.DomainMap, dcir.Tasklet)) for n in nodes):
             return nodes
-        elif not all(isinstance(n, (dcir.ComputationState, dcir.DomainLoop)) for n in nodes):
+        elif not all(isinstance(n, (dcir.ComputationState, dcir.DomainLoop, dcir.Condition)) for n in nodes):
             raise ValueError("Can't mix dataflow and state nodes on same level.")
 
         read_memlets, write_memlets, field_memlets = union_inout_memlets(nodes)

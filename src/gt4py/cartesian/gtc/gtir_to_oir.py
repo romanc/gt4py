@@ -173,7 +173,26 @@ class GTIRToOIR(eve.NodeTranslator):
         ctx: Context,
         **kwargs: Any,
     ) -> List[oir.Stmt]:
-        current_mask: oir.Expr = self.visit(node.cond)
+        mask_field_decl = oir.Temporary(
+            name=f"mask_{id(node)}", dtype=DataType.BOOL, dimensions=(True, True, True)
+        )
+        ctx.temp_fields.append(mask_field_decl)
+        temp_field_access = oir.AssignStmt(
+            left=oir.FieldAccess(
+                name=mask_field_decl.name,
+                offset=CartesianOffset.zero(),
+                dtype=DataType.BOOL,
+                loc=node.loc,
+            ),
+            right=self.visit(node.cond),
+        )
+    
+        current_mask = oir.FieldAccess(
+            name=mask_field_decl.name,
+            offset=CartesianOffset.zero(),
+            dtype=mask_field_decl.dtype,
+            loc=node.loc,
+        )
         statements: List[oir.Stmt] = []
 
         # handle "if" branch
@@ -185,7 +204,7 @@ class GTIRToOIR(eve.NodeTranslator):
         body_if = [
             self.visit(statement, ctx=ctx, **kwargs) for statement in node.true_branch.body
         ]
-        statements.append(oir.MaskStmt(body=body_if, mask=combined_mask, loc=node.loc))
+        statements.append(oir.MaskStmt(body=body_if, mask=combined_mask, loc=node.loc, temp_field_assignment=temp_field_access))
 
         # handle "else" branch
         if node.false_branch:
@@ -197,7 +216,7 @@ class GTIRToOIR(eve.NodeTranslator):
             body_else = [
                 self.visit(statement, ctx=ctx, **kwargs) for statement in node.false_branch.body
             ]
-            statements.append(oir.MaskStmt(body=body_else, mask=combined_mask_not, loc=node.loc))
+            statements.append(oir.MaskStmt(body=body_else, mask=combined_mask_not, loc=node.loc, temp_field_assignment=temp_field_access))
 
         return statements
 
