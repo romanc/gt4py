@@ -194,10 +194,10 @@ class GTIRToOIR(eve.NodeTranslator):
                 combined_mask_not = oir.BinaryOp(
                     op=LogicalOperator.AND, left=mask, right=combined_mask_not, loc=node.loc
                 )
-                body_else = [
-                    self.visit(statement, ctx=ctx, **kwargs) for statement in node.false_branch.body
-                ]
-                statements.append(oir.MaskStmt(body=body_else, mask=combined_mask_not, loc=node.loc))
+            body_else = [
+                self.visit(statement, ctx=ctx, **kwargs) for statement in node.false_branch.body
+            ]
+            statements.append(oir.MaskStmt(body=body_else, mask=combined_mask_not, loc=node.loc))
 
         return statements
 
