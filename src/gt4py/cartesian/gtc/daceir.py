@@ -856,7 +856,7 @@ class Condition(eve.Node):
 class DomainMap(ComputationNode, IterationNode):
     index_ranges: List[Range]
     schedule: MapSchedule
-    computations: List[Union[Tasklet, Condition, DomainMap, NestedSDFG]]
+    computations: List[Union[Tasklet, DomainMap, NestedSDFG]]
 
 
 class ComputationState(IterationNode):

@@ -20,6 +20,7 @@ import dace
 import dace.data
 import dace.library
 import dace.subsets
+import dace.dtypes as dtypes
 
 from gt4py import eve
 from gt4py.cartesian.gtc import daceir as dcir
@@ -197,9 +198,17 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         symtable: ChainMap[eve.SymbolRef, dcir.Decl],
         **kwargs,
     ) -> None:
-        # condition = self.visit(node.condition, is_target=False, **kwargs)
+        # TODO
+        # - node.condition is an assignment statement -> expand to local variable
+        # - use the local variable as condition
+        # -> this will fix the symbol issues and make it compatible for the numpy backend again
+        #   -> minor changes in the numpy backend codegen are needed
         code = TaskletCodegen().visit(node.condition, is_target=False, **kwargs)
+        # tmp_condition_name = f"mask_{id(node)}"
+        # sdfg_ctx.sdfg.add_scalar(name=tmp_condition_name, dtype=dtypes.bool_, transient=True)
+        # tmp = sdfg_ctx.state.add_access(tmp_condition_name)
         sdfg_ctx.add_condition(code)
+        assert sdfg_ctx.state.label == "condition_true"
 
         for tasklet in node.true_state:
             self.visit(tasklet, sdfg_ctx=sdfg_ctx, node_ctx=node_ctx, symtable=symtable, **kwargs)
@@ -208,6 +217,8 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         for tasklet in node.false_state:
             self.visit(tasklet, sdfg_ctx, node_ctx, symtable, **kwargs)
         sdfg_ctx.pop_condition_after()
+
+        assert sdfg_ctx.state.label == "condition_after"
 
     def visit_Tasklet(
         self,

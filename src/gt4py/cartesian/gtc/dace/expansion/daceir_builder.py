@@ -458,11 +458,28 @@ class DaCeIRBuilder(eve.NodeTranslator):
         computations = []
 
         if len(stmts) == 1 and isinstance(stmts[0], dcir.MaskStmt):
-            tasklet = dcir.Tasklet(
-                decls=decls, stmts=stmts[0].body, read_memlets=tasklet_read_memlets, write_memlets=tasklet_write_memlets
+            read_memlets = _get_tasklet_inout_memlets(
+                node.body,
+                get_outputs=False,
+                global_ctx=global_ctx,
+                grid_subset=iteration_ctx.grid_subset,
+                k_interval=k_interval,
             )
 
-            for memlet in [*tasklet_read_memlets, *tasklet_write_memlets]:
+            write_memlets = _get_tasklet_inout_memlets(
+                node.body,
+                get_outputs=True,
+                global_ctx=global_ctx,
+                grid_subset=iteration_ctx.grid_subset,
+                k_interval=k_interval,
+            )
+
+            tasklet = dcir.Tasklet(
+                #decls=decls, stmts=stmts[0].body, read_memlets=tasklet_read_memlets, write_memlets=tasklet_write_memlets
+                decls=decls, stmts=stmts[0].body, read_memlets=read_memlets, write_memlets=write_memlets
+            )
+
+            for memlet in [*read_memlets, *write_memlets]:
                 """
                 This loop handles the special case of a tasklet performing array access.
                 The memlet should pass the full array shape (no tiling) and
@@ -498,21 +515,24 @@ class DaCeIRBuilder(eve.NodeTranslator):
             
             computations.append(dcir.Condition(condition=stmts[0].mask, true_state=[tasklet]))
 
+        
         # subgraph_states = self.to_state(computations, grid_subset=iteration_ctx.grid_subset)
-        read_memlets, write_memlets, field_memlets = union_inout_memlets(computations)
-        read_fields = set(memlet.field for memlet in read_memlets)
-        write_fields = set(memlet.field for memlet in write_memlets)
-
+        # read_memlets, write_memlets, field_memlets = union_inout_memlets(computations)
+        # read_fields = set(memlet.field for memlet in read_memlets)
+        # write_fields = set(memlet.field for memlet in write_memlets)
+    
         # add memlet symbols used for array indexing
-        for memlet in field_memlets:
+        for memlet in [*tasklet_read_memlets, *tasklet_write_memlets]:
             for sym in memlet.access_info.grid_subset.free_symbols:
                 symbol_collector.add_symbol(sym)
-
+    
         dcir_node = dcir.NestedSDFG(
             label="my_sub_sdfg_with_tasklet",
             states=computations,
-            read_memlets=[memlet for memlet in field_memlets if memlet.field in read_fields],
-            write_memlets=[memlet for memlet in field_memlets if memlet.field in write_fields],
+            # read_memlets=[memlet for memlet in field_memlets if memlet.field in read_fields],
+            # write_memlets=[memlet for memlet in field_memlets if memlet.field in write_fields],
+            read_memlets=tasklet_read_memlets,
+            write_memlets=tasklet_write_memlets,
             field_decls=global_ctx.get_dcir_decls(
                 global_ctx.library_node.access_infos, symbol_collector=symbol_collector
             ),
@@ -598,7 +618,7 @@ class DaCeIRBuilder(eve.NodeTranslator):
         nodes = flatten_list(nodes)
         if all(isinstance(n, (dcir.NestedSDFG, dcir.DomainMap, dcir.Tasklet)) for n in nodes):
             return nodes
-        elif not all(isinstance(n, (dcir.ComputationState, dcir.DomainLoop)) for n in nodes):
+        elif not all(isinstance(n, (dcir.ComputationState, dcir.DomainLoop, dcir.Condition)) for n in nodes):
             raise ValueError("Can't mix dataflow and state nodes on same level.")
 
         read_memlets, write_memlets, field_memlets = union_inout_memlets(nodes)
