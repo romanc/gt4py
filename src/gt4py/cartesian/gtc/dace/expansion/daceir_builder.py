@@ -404,7 +404,6 @@ class DaCeIRBuilder(eve.NodeTranslator):
         global_ctx: "DaCeIRBuilder.GlobalContext",
         iteration_ctx: "DaCeIRBuilder.IterationContext",
         symbol_collector: "DaCeIRBuilder.SymbolCollector",
-        loop_order,
         k_interval,
         **kwargs,
     ):
@@ -615,7 +614,6 @@ class DaCeIRBuilder(eve.NodeTranslator):
         global_ctx: "DaCeIRBuilder.GlobalContext",
         iteration_ctx: "DaCeIRBuilder.IterationContext",
         symbol_collector: "DaCeIRBuilder.SymbolCollector",
-        **kwargs,
     ):
         grid_subset = iteration_ctx.grid_subset
         read_memlets, write_memlets, _ = union_inout_memlets(list(scope_nodes))
@@ -710,10 +708,8 @@ class DaCeIRBuilder(eve.NodeTranslator):
         scope_nodes,
         item: Loop,
         *,
-        global_ctx,
         iteration_ctx: "DaCeIRBuilder.IterationContext",
         symbol_collector: "DaCeIRBuilder.SymbolCollector",
-        **kwargs,
     ):
         grid_subset = union_node_grid_subsets(list(scope_nodes))
         read_memlets, write_memlets, _ = union_inout_memlets(list(scope_nodes))
