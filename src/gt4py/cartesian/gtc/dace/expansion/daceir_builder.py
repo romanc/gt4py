@@ -452,7 +452,7 @@ class DaCeIRBuilder(eve.NodeTranslator):
             k_interval=k_interval,
         )
 
-        dcir_node = dcir.Tasklet(
+        tasklet = dcir.Tasklet(
             decls=decls, stmts=stmts, read_memlets=read_memlets, write_memlets=write_memlets
         )
 
@@ -478,7 +478,7 @@ class DaCeIRBuilder(eve.NodeTranslator):
             ]
             if len(memlet_data_index) < array_ndims:
                 reshape_memlet = False
-                for access_node in dcir_node.walk_values().if_isinstance(dcir.IndexAccess):
+                for access_node in tasklet.walk_values().if_isinstance(dcir.IndexAccess):
                     if access_node.data_index and access_node.name == memlet.connector:
                         access_node.data_index = memlet_data_index + access_node.data_index
                         assert len(access_node.data_index) == array_ndims
@@ -490,6 +490,12 @@ class DaCeIRBuilder(eve.NodeTranslator):
                     # set full shape on memlet
                     memlet.access_info = global_ctx.library_node.access_infos[memlet.field]
 
+        # wrap tasklet in a computation state
+        computation_state = self.to_state(tasklet, grid_subset=iteration_ctx.grid_subset)
+
+        # wrap computation state in an (empty) nested SDFG
+        dcir_node = self.to_dataflow(computation_state, global_ctx=global_ctx, symbol_collector=symbol_collector)
+
         for item in reversed(expansion_items):
             iteration_ctx = iteration_ctx.pop()
             dcir_node = self._process_iteration_item(
@@ -500,8 +506,10 @@ class DaCeIRBuilder(eve.NodeTranslator):
                 symbol_collector=symbol_collector,
                 **kwargs,
             )
+
         # pop stages context (pushed with push_grid_subset)
         iteration_ctx.pop()
+
         return dcir_node
 
     def visit_VerticalLoopSection(
