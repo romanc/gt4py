@@ -173,47 +173,33 @@ class GTIRToOIR(eve.NodeTranslator):
         ctx: Context,
         **kwargs: Any,
     ) -> List[oir.Stmt]:
-        mask_field_decl = oir.Temporary(
-            name=f"mask_{id(node)}", dtype=DataType.BOOL, dimensions=(True, True, True)
-        )
-        ctx.temp_fields.append(mask_field_decl)
-        stmts: List[oir.Stmt] = [
-            oir.AssignStmt(
-                left=oir.FieldAccess(
-                    name=mask_field_decl.name,
-                    offset=CartesianOffset.zero(),
-                    dtype=DataType.BOOL,
-                    loc=node.loc,
-                ),
-                right=self.visit(node.cond),
-            )
-        ]
+        current_mask: oir.Expr = self.visit(node.cond)
+        statements: List[oir.Stmt] = []
 
-        current_mask = oir.FieldAccess(
-            name=mask_field_decl.name,
-            offset=CartesianOffset.zero(),
-            dtype=mask_field_decl.dtype,
-            loc=node.loc,
-        )
-
-        combined_mask: oir.Expr = current_mask
+        # handle "if" branch
+        combined_mask = current_mask
         if mask:
             combined_mask = oir.BinaryOp(
                 op=LogicalOperator.AND, left=mask, right=combined_mask, loc=node.loc
             )
-        stmts.extend(self.visit(node.true_branch.body, mask=combined_mask, ctx=ctx, **kwargs))
+        body_if = [
+            self.visit(statement, ctx=ctx, **kwargs) for statement in node.true_branch.body
+        ]
+        statements.append(oir.MaskStmt(body=body_if, mask=combined_mask, loc=node.loc))
 
+        # handle "else" branch
         if node.false_branch:
             combined_mask_not: oir.Expr = oir.UnaryOp(op=UnaryOperator.NOT, expr=current_mask)
             if mask:
                 combined_mask_not = oir.BinaryOp(
                     op=LogicalOperator.AND, left=mask, right=combined_mask_not, loc=node.loc
                 )
-            stmts.extend(
-                self.visit(node.false_branch.body, mask=combined_mask_not, ctx=ctx, **kwargs)
-            )
+                body_else = [
+                    self.visit(statement, ctx=ctx, **kwargs) for statement in node.false_branch.body
+                ]
+                statements.append(oir.MaskStmt(body=body_else, mask=combined_mask_not, loc=node.loc))
 
-        return stmts
+        return statements
 
     # For now we represent ScalarIf (and FieldIf) both as masks on the HorizontalExecution.
     # This is not meant to be set in stone...
@@ -225,21 +211,31 @@ class GTIRToOIR(eve.NodeTranslator):
         ctx: Context,
         **kwargs: Any,
     ) -> List[oir.Stmt]:
-        current_mask = self.visit(node.cond)
+        current_mask: oir.Expr = self.visit(node.cond)
+        statements: List[oir.Stmt] = []
+
+        # handle "if" branch
         combined_mask = current_mask
         if mask:
             combined_mask = oir.BinaryOp(
                 op=LogicalOperator.AND, left=mask, right=current_mask, loc=node.loc
             )
+        body_if = [
+            self.visit(statement, ctx=ctx, **kwargs) for statement in node.true_branch.body
+        ]
+        statements.append(oir.MaskStmt(body=body_if, mask=combined_mask, loc=node.loc))
 
-        stmts = self.visit(node.true_branch.body, mask=combined_mask, ctx=ctx, **kwargs)
+        # handle "else" branch
         if node.false_branch:
             combined_mask = oir.UnaryOp(op=UnaryOperator.NOT, expr=current_mask, loc=node.loc)
             if mask:
                 combined_mask = oir.BinaryOp(op=LogicalOperator.AND, left=mask, right=combined_mask)
-            stmts.extend(self.visit(node.false_branch.body, mask=combined_mask, ctx=ctx, **kwargs))
+            body_else = [
+                self.visit(statement, ctx=ctx, **kwargs) for statement in node.false_branch.body
+            ]
+            statements.append(oir.MaskStmt(body=body_else, mask=combined_mask, loc=node.loc))
 
-        return stmts
+        return statements
 
     # --- Misc ---
     def visit_Interval(self, node: gtir.Interval) -> oir.Interval:
