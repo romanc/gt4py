@@ -52,7 +52,7 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
 
         def add_loop(self, index_range: dcir.Range):
             loop_state = self.sdfg.add_state()
-            after_state = self.sdfg.add_state()
+            after_state = self.sdfg.add_state("loop_after")
             for edge in self.sdfg.out_edges(self.state):
                 self.sdfg.remove_edge(edge)
                 self.sdfg.add_edge(after_state, edge.dst, edge.data)
@@ -83,6 +83,46 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
             return self
 
         def pop_loop(self):
+            self._pop_last("loop_after")
+
+        def add_condition(self, condition: str) -> Tuple[dace.SDFGState, dace.SDFGState, dace.SDFGState, dace.SDFGState]:
+            """ Inserts a condition state after the current self.state.
+                The condition state is connected to a true_state and a false_state based on
+                the given condition. Both states merge into a merge_state.
+                self.state is set to true_state and merge_state / false_state are pushed to
+                the stack of states; to be popped with pop_condition_{false, after}().
+            """
+            merge_state = self.sdfg.add_state("condition_after")
+            for edge in self.sdfg.out_edges(self.state):
+                self.sdfg.remove_edge(edge)
+                self.sdfg.add_edge(merge_state, edge.dst, edge.data)
+
+            condition_state = self.sdfg.add_state("condition")
+            self.sdfg.add_edge(self.state, condition_state, dace.InterstateEdge())
+
+            true_state = self.sdfg.add_state("condition_true")
+            self.sdfg.add_edge(condition_state, true_state, dace.InterstateEdge(condition))
+            self.sdfg.add_edge(true_state, merge_state, dace.InterstateEdge())
+
+            false_state = self.sdfg.add_state("condition_false")
+            self.sdfg.add_edge(condition_state, false_state, dace.InterstateEdge("not (%s)" % condition))
+            self.sdfg.add_edge(false_state, merge_state, dace.InterstateEdge())
+
+            self.state_stack.append(merge_state)
+            self.state_stack.append(false_state)
+            self.state = true_state
+            return self
+
+        def pop_condition_false(self):
+            self._pop_last("condition_false")
+
+        def pop_condition_after(self):
+            self._pop_last("condition_after")
+
+        def _pop_last(self, node_label: str | None = None) -> None:
+            if node_label:
+                assert self.state_stack[-1].label == node_label
+
             self.state = self.state_stack[-1]
             del self.state_stack[-1]
 
@@ -135,6 +175,34 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
             sdfg_ctx.state.add_edge(
                 exit_node, None, *node_ctx.output_node_and_conns[None], dace.Memlet()
             )
+
+    def visit_Condition(
+        self,
+        node: dcir.Condition,
+        *,
+        sdfg_ctx: "StencilComputationSDFGBuilder.SDFGContext",
+        node_ctx: "StencilComputationSDFGBuilder.NodeContext",
+        symtable: ChainMap[eve.SymbolRef, dcir.Decl],
+        **kwargs,
+    ) -> None:
+        # TODO
+        # - node.condition is an assignment statement -> expand to local variable/symbol
+        # - use the local variable as condition
+        # -> this will fix the symbol issues and make it compatible for the numpy backend again
+        #   -> minor changes in the numpy backend codegen are needed
+        code = TaskletCodegen().visit(node.condition, is_target=False, **kwargs)
+        sdfg_ctx.add_condition(code)
+        assert sdfg_ctx.state.label == "condition_true"
+
+        for tasklet in node.true_state:
+            self.visit(tasklet, sdfg_ctx=sdfg_ctx, node_ctx=node_ctx, symtable=symtable, **kwargs)
+        sdfg_ctx.pop_condition_false()
+
+        for tasklet in node.false_state:
+            self.visit(tasklet, sdfg_ctx, node_ctx, symtable, **kwargs)
+        sdfg_ctx.pop_condition_after()
+
+        assert sdfg_ctx.state.label == "condition_after"
 
     def visit_Tasklet(
         self,
