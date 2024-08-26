@@ -184,6 +184,7 @@ class AccessInfoCollector(eve.NodeVisitor):
         self.visit(node.body, is_conditional=True, region=node.mask, **kwargs)
 
     def visit_MaskStmt(self, node: oir.MaskStmt, *, is_conditional=False, **kwargs):
+        # self.visit(node.temp_field_assignment, is_conditional=is_conditional, **kwargs)
         self.visit(node.mask, is_conditional=is_conditional, **kwargs)
         self.visit(node.body, is_conditional=True, **kwargs)
 

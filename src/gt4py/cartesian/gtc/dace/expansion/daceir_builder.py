@@ -370,6 +370,8 @@ class DaCeIRBuilder(eve.NodeTranslator):
         return dcir.AssignStmt(left=left, right=right)
 
     def visit_MaskStmt(self, node: oir.MaskStmt, **kwargs: Any) -> dcir.MaskStmt:
+        if node.temp_field_assignment:
+            self.visit(node.temp_field_assignment, **kwargs)
         return dcir.MaskStmt(
             mask=self.visit(node.mask, is_target=False, **kwargs),
             body=self.visit(node.body, **kwargs),

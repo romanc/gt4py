@@ -34,7 +34,7 @@ class MaskStmtMerging(NodeTranslator):
                     & AccessCollector.apply(stmt.mask, is_write=False).fields()
                 )
             ):
-                merged[-1] = oir.MaskStmt(mask=merged[-1].mask, body=merged[-1].body + stmt.body)
+                merged[-1] = oir.MaskStmt(mask=merged[-1].mask, body=merged[-1].body + stmt.body, temp_field_assignment=merged[-1].temp_field_assignment)
             else:
                 merged.append(stmt)
         return merged
@@ -47,7 +47,7 @@ class MaskStmtMerging(NodeTranslator):
     # Stmt node types with lists of Stmts within them:
 
     def visit_MaskStmt(self, node: oir.MaskStmt) -> oir.MaskStmt:
-        return oir.MaskStmt(mask=node.mask, body=self._merge(node.body), loc=node.loc)
+        return oir.MaskStmt(mask=node.mask, body=self._merge(node.body), loc=node.loc, temp_field_assignment=node.temp_field_assignment)
 
     def visit_While(self, node: oir.While) -> oir.While:
         body_nodes = []
