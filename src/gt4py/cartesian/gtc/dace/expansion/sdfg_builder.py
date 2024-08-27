@@ -88,9 +88,10 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         def add_condition(self, node: dcir.Condition) -> Tuple[dace.SDFGState, dace.SDFGState, dace.SDFGState, dace.SDFGState]:
             """ Inserts a condition state after the current self.state.
                 The condition state is connected to a true_state and a false_state based on
-                the given condition. Both states merge into a merge_state.
+                a temporary local variable identified by `node.mask_name`. Both states then merge
+                into a merge_state.
                 self.state is set to true_state and merge_state / false_state are pushed to
-                the stack of states; to be popped with pop_condition_{false, after}().
+                the stack of states; to be popped with `pop_condition_{false, after}()`.
             """
             merge_state = self.sdfg.add_state("condition_after")
             for edge in self.sdfg.out_edges(self.state):
@@ -185,27 +186,6 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         symtable: ChainMap[eve.SymbolRef, dcir.Decl],
         **kwargs,
     ) -> None:
-        # TODO
-        # - add a state for mask evaluation
-        # - add a *transient* local boolean variable
-        # - add a tasklet in the evaluation_state to evaluate `node.mask`
-
-        # idea:
-        # how about we do this when building the daceir?
-        # because then we can just re-use visit_Tasklet
-        
-        # mask_name = f"mask_{id(node)}"
-        # sdfg_ctx.sdfg.add_scalar(mask_name, dace.bool, transient=True)
-        # sdfg_ctx.add_state("evaluation_state")
-        # mask_write = sdfg_ctx.state.add_write(mask_name)
-        # tasklet = sdfg_ctx.state.add_tasklet("evaluation_state", {}, {"mask"}, "")
-        # sdfg_ctx.state.add_memlet_path(tasklet, mask_write, src_conn="mask", memlet=dace.Memlet(mask_name))
-
-        # TODO
-        # now we need to get the condition out of the other state
-
-        # code = TaskletCodegen().visit(node.condition, is_target=False, symtable=symtable, sdfg_ctx=sdfg_ctx, in_idx=True, **kwargs)
-        # code = "(in_field > 5.0) and (in_field < 20.0)"
         sdfg_ctx.add_condition(node)
         assert sdfg_ctx.state.label == "condition_true"
 
@@ -236,19 +216,22 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
             symtable=symtable,
         )
 
+        exported_scalars = set(f"__{name}" for name in node.exported_scalars)
+        memlet_connectors = set(memlet.connector for memlet in node.write_memlets)
+
         tasklet = sdfg_ctx.state.add_tasklet(
             name=f"{sdfg_ctx.sdfg.label}_Tasklet_{id(node)}",
             code=code,
             inputs=set(memlet.connector for memlet in node.read_memlets),
-            outputs=set(f"__{name}" for name in node.scalar_mapping).union(set(memlet.connector for memlet in node.write_memlets)),
+            outputs=exported_scalars.union(memlet_connectors),
             debuginfo=get_dace_debuginfo(node),
         )
 
-        for mask_name in node.scalar_mapping:
-            sdfg_ctx.sdfg.add_scalar(mask_name, dace.bool, transient=True)
-            access_node = sdfg_ctx.state.add_access(mask_name)
+        for name in node.exported_scalars:
+            sdfg_ctx.sdfg.add_scalar(name, dace.bool, transient=True)
+            access_node = sdfg_ctx.state.add_access(name)
             sdfg_ctx.state.add_memlet_path(
-                tasklet, access_node, src_conn=f"__{mask_name}", memlet=dace.Memlet(mask_name)
+                tasklet, access_node, src_conn=f"__{name}", memlet=dace.Memlet(name)
             )
 
         self.visit(

@@ -809,7 +809,7 @@ class Temporary(FieldDecl):
 class ComputationNode(LocNode):
     # mapping connector names to tuple of field name and access info
     read_memlets: List[Memlet]
-    write_memlets: List[Memlet]
+    write_memlets: List[Memlet] = []
 
     @datamodels.validator("read_memlets")
     @datamodels.validator("write_memlets")
@@ -844,7 +844,6 @@ class IterationNode(eve.Node):
 
 class Condition(eve.Node):
     mask_name: str
-    condition: Expr
     true_state: List[ComputationState]
     false_state: Optional[List[ComputationState]] = []
 
@@ -853,7 +852,7 @@ class Tasklet(ComputationNode, IterationNode, eve.SymbolTableTrait):
     decls: List[LocalScalarDecl]
     stmts: List[Stmt]
     grid_subset: GridSubset = GridSubset.single_gridpoint()
-    scalar_mapping: set[str] = set()
+    exported_scalars: set[str] = set()
 
 
 class DomainMap(ComputationNode, IterationNode):
