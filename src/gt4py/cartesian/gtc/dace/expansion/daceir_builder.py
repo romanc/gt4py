@@ -429,8 +429,8 @@ class DaCeIRBuilder(eve.NodeTranslator):
         #     for stmt in node.body
         # ]
 
-        
-        oir_tmp = oir.LocalScalar(name=f"mask_{id(node)}", dtype=common.DataType.BOOL)
+        mask_name = f"mask_{id(node)}"
+        oir_tmp = oir.LocalScalar(name=mask_name, dtype=common.DataType.BOOL)
         mask_decls = [self.visit(oir_tmp, **kwargs)]
         oir_assign = oir.FieldAccess(
             name=oir_tmp.name,
@@ -531,12 +531,13 @@ class DaCeIRBuilder(eve.NodeTranslator):
         # Figure out what is good write_memlet is for the mask_tasklet
 
         mask_tasklet = dcir.Tasklet(
-            decls=mask_decls, stmts=[mask_tasklet_statement],
-            read_memlets=read_memlets, write_memlets=write_memlets,
+            decls=[], stmts=[mask_tasklet_statement],
+            read_memlets=read_memlets, write_memlets=[],
+            scalar_mapping={mask_name}
         )
         mask_state = self.to_state(mask_tasklet, grid_subset=iteration_ctx.grid_subset)
 
-        condition = dcir.Condition(condition=mask_statement.mask, true_state=computation_state)
+        condition = dcir.Condition(mask_name=mask_name, condition=mask_statement.mask, true_state=computation_state)
 
         # wrap computation state in an (empty) nested SDFG
         dcir_node = self.to_dataflow([*mask_state, condition], global_ctx=global_ctx, symbol_collector=symbol_collector)

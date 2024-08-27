@@ -85,7 +85,7 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         def pop_loop(self):
             self._pop_last("loop_after")
 
-        def add_condition(self, condition_expression: str) -> Tuple[dace.SDFGState, dace.SDFGState, dace.SDFGState, dace.SDFGState]:
+        def add_condition(self, node: dcir.Condition) -> Tuple[dace.SDFGState, dace.SDFGState, dace.SDFGState, dace.SDFGState]:
             """ Inserts a condition state after the current self.state.
                 The condition state is connected to a true_state and a false_state based on
                 the given condition. Both states merge into a merge_state.
@@ -98,14 +98,14 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
                 self.sdfg.add_edge(merge_state, edge.dst, edge.data)
 
             condition_state = self.sdfg.add_state("condition")
-            self.sdfg.add_edge(self.state, condition_state, dace.InterstateEdge(assignments=dict(expression=condition_expression)))
+            self.sdfg.add_edge(self.state, condition_state, dace.InterstateEdge())
 
             true_state = self.sdfg.add_state("condition_true")
-            self.sdfg.add_edge(condition_state, true_state, dace.InterstateEdge(condition="expression"))
+            self.sdfg.add_edge(condition_state, true_state, dace.InterstateEdge(condition=node.mask_name))
             self.sdfg.add_edge(true_state, merge_state, dace.InterstateEdge())
 
             false_state = self.sdfg.add_state("condition_false")
-            self.sdfg.add_edge(condition_state, false_state, dace.InterstateEdge(condition="not expression"))
+            self.sdfg.add_edge(condition_state, false_state, dace.InterstateEdge(condition=f"not {node.mask_name}"))
             self.sdfg.add_edge(false_state, merge_state, dace.InterstateEdge())
 
             self.state_stack.append(merge_state)
@@ -205,8 +205,8 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         # now we need to get the condition out of the other state
 
         # code = TaskletCodegen().visit(node.condition, is_target=False, symtable=symtable, sdfg_ctx=sdfg_ctx, in_idx=True, **kwargs)
-        code = "(in_field > 5.0) and (in_field < 20.0)"
-        sdfg_ctx.add_condition(code)
+        # code = "(in_field > 5.0) and (in_field < 20.0)"
+        sdfg_ctx.add_condition(node)
         assert sdfg_ctx.state.label == "condition_true"
 
         for tasklet in node.true_state:
@@ -240,9 +240,16 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
             name=f"{sdfg_ctx.sdfg.label}_Tasklet_{id(node)}",
             code=code,
             inputs=set(memlet.connector for memlet in node.read_memlets),
-            outputs=set(memlet.connector for memlet in node.write_memlets),
+            outputs=set(f"__{name}" for name in node.scalar_mapping).union(set(memlet.connector for memlet in node.write_memlets)),
             debuginfo=get_dace_debuginfo(node),
         )
+
+        for mask_name in node.scalar_mapping:
+            sdfg_ctx.sdfg.add_scalar(mask_name, dace.bool, transient=True)
+            access_node = sdfg_ctx.state.add_access(mask_name)
+            sdfg_ctx.state.add_memlet_path(
+                tasklet, access_node, src_conn=f"__{mask_name}", memlet=dace.Memlet(mask_name)
+            )
 
         self.visit(
             node.read_memlets,
