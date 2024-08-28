@@ -159,54 +159,19 @@ class GTIRToOIR(eve.NodeTranslator):
             condition = oir.BinaryOp(op=common.LogicalOperator.AND, left=mask, right=condition)
         return oir.While(cond=condition, body=body, loc=node.loc)
 
-    def visit_FieldIfStmt(
+    def _process_IfStatement(
         self,
-        node: gtir.FieldIfStmt,
+        node: Union[gtir.ScalarIfStmt, gtir.FieldIfStmt],
         *,
         mask: Optional[oir.Expr] = None,
         ctx: Context,
-        **kwargs: Any,
-    ) -> List[oir.Stmt]:
-        current_mask: oir.Expr = self.visit(node.cond)
-        statements: List[oir.Stmt] = []
-
-        # handle "if" branch
-        combined_mask = current_mask
-        if mask:
-            combined_mask = oir.BinaryOp(
-                op=LogicalOperator.AND, left=mask, right=combined_mask, loc=node.loc
-            )
-        body_if = [
-            self.visit(statement, ctx=ctx, **kwargs) for statement in node.true_branch.body
-        ]
-        statements.append(oir.MaskStmt(body=body_if, mask=combined_mask, loc=node.loc))
-
-        # handle "else" branch
-        if node.false_branch:
-            combined_mask_not: oir.Expr = oir.UnaryOp(op=UnaryOperator.NOT, expr=current_mask)
-            if mask:
-                combined_mask_not = oir.BinaryOp(
-                    op=LogicalOperator.AND, left=mask, right=combined_mask_not, loc=node.loc
-                )
-            body_else = [
-                self.visit(statement, ctx=ctx, **kwargs) for statement in node.false_branch.body
-            ]
-            statements.append(oir.MaskStmt(body=body_else, mask=combined_mask_not, loc=node.loc))
-
-        return statements
-
-    # For now we represent ScalarIf (and FieldIf) both as masks on the HorizontalExecution.
-    # This is not meant to be set in stone...
-    def visit_ScalarIfStmt(
-        self,
-        node: gtir.ScalarIfStmt,
-        *,
-        mask: Optional[oir.Expr] = None,
-        ctx: Context,
-        **kwargs: Any,
-    ) -> List[oir.Stmt]:
-        current_mask: oir.Expr = self.visit(node.cond)
-        statements: List[oir.Stmt] = []
+        **kwargs: Any
+    ) -> List[oir.MaskStmt]:
+        """
+        For now, we represent `if` statements as masks on the HorizontalExecution.
+        This is not meant to be set in stone.
+        """
+        current_mask: oir.Expr = self.visit(node.cond, **kwargs)
 
         # handle "if" branch
         combined_mask = current_mask
@@ -217,19 +182,39 @@ class GTIRToOIR(eve.NodeTranslator):
         body_if = [
             self.visit(statement, ctx=ctx, **kwargs) for statement in node.true_branch.body
         ]
-        statements.append(oir.MaskStmt(body=body_if, mask=combined_mask, loc=node.loc))
+        statements = [oir.MaskStmt(body=body_if, mask=combined_mask, loc=node.loc)]
 
         # handle "else" branch
         if node.false_branch:
             combined_mask = oir.UnaryOp(op=UnaryOperator.NOT, expr=current_mask, loc=node.loc)
             if mask:
-                combined_mask = oir.BinaryOp(op=LogicalOperator.AND, left=mask, right=combined_mask)
+                combined_mask = oir.BinaryOp(op=LogicalOperator.AND, left=mask, right=combined_mask, loc=node.loc)
             body_else = [
                 self.visit(statement, ctx=ctx, **kwargs) for statement in node.false_branch.body
             ]
             statements.append(oir.MaskStmt(body=body_else, mask=combined_mask, loc=node.loc))
 
         return statements
+
+    def visit_FieldIfStmt(
+        self,
+        node: gtir.FieldIfStmt,
+        *,
+        mask: Optional[oir.Expr] = None,
+        ctx: Context,
+        **kwargs: Any,
+    ) -> List[oir.MaskStmt]:
+        return self._process_IfStatement(node, mask=mask, ctx=ctx, **kwargs)
+
+    def visit_ScalarIfStmt(
+        self,
+        node: gtir.ScalarIfStmt,
+        *,
+        mask: Optional[oir.Expr] = None,
+        ctx: Context,
+        **kwargs: Any,
+    ) -> List[oir.MaskStmt]:
+        return self._process_IfStatement(node, mask=mask, ctx=ctx, **kwargs)
 
     # --- Misc ---
     def visit_Interval(self, node: gtir.Interval) -> oir.Interval:
