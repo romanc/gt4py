@@ -122,7 +122,7 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
 
         def _pop_last(self, node_label: str | None = None) -> None:
             if node_label:
-                assert self.state_stack[-1].label == node_label
+                assert self.state_stack[-1].label.startswith(node_label)
 
             self.state = self.state_stack[-1]
             del self.state_stack[-1]
@@ -187,7 +187,7 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         **kwargs,
     ) -> None:
         sdfg_ctx.add_condition(node)
-        assert sdfg_ctx.state.label == "condition_true"
+        assert sdfg_ctx.state.label.startswith("condition_true")
 
         for tasklet in node.true_state:
             self.visit(tasklet, sdfg_ctx=sdfg_ctx, node_ctx=node_ctx, symtable=symtable, **kwargs)
@@ -197,7 +197,7 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
             self.visit(tasklet, sdfg_ctx, node_ctx, symtable, **kwargs)
         sdfg_ctx.pop_condition_after()
 
-        assert sdfg_ctx.state.label == "condition_after"
+        assert sdfg_ctx.state.label.startswith("condition_after")
 
     def visit_Tasklet(
         self,

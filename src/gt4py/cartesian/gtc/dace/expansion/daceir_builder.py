@@ -438,20 +438,23 @@ class DaCeIRBuilder(eve.NodeTranslator):
                     # set full shape on memlet
                     memlet.access_info = global_ctx.library_node.access_infos[memlet.field]
 
-    def _process_single_mask_statement(
+    def _process_all_mask_statements(
         self,
-        node: oir.HorizontalExecution,
+        # TODO: merge this function with visit_MaskStmt
+        node: oir.MaskStmt,
         *,
+        parent: oir.HorizontalExecution,
         global_ctx: "DaCeIRBuilder.GlobalContext",
         iteration_ctx: "DaCeIRBuilder.IterationContext",
         symbol_collector: "DaCeIRBuilder.SymbolCollector",
         k_interval,
         **kwargs,
     ):
-        decls = [self.visit(decl, **kwargs) for decl in node.declarations]
         targets: Set[str] = set()
 
         mask_name = f"mask_{id(node)}"
+        #temporary = dcir.LocalScalarDecl(name=mask_name, dtype=common.DataType.BOOL)
+        #symbol_collector.add_symbol(mask_name, dtype=common.DataType.BOOL)
         oir_tmp = oir.LocalScalar(name=mask_name, dtype=common.DataType.BOOL)
         oir_assign = oir.FieldAccess(
             name=oir_tmp.name,
@@ -459,14 +462,15 @@ class DaCeIRBuilder(eve.NodeTranslator):
             dtype=common.DataType.BOOL,
             loc=node.loc,
         )
-        mask_statement: dcir.MaskStmt = self.visit(node.body[0], targets=targets, global_ctx=global_ctx, symbol_collector=symbol_collector, **kwargs)
+        mask_statement: dcir.MaskStmt = self.visit(node, targets=targets, global_ctx=global_ctx, symbol_collector=symbol_collector, **kwargs)
         mask_tasklet_statement = dcir.AssignStmt(
+            #left=dcir.ScalarAccess(name=mask_name, dtype=common.DataType.BOOL),
             left=self.visit(oir_assign, is_target=True, targets=targets, **kwargs),
             right=mask_statement.mask
         )
 
         read_memlets = _get_tasklet_inout_memlets(
-            node,
+            parent,
             get_outputs=False,
             global_ctx=global_ctx,
             grid_subset=iteration_ctx.grid_subset,
@@ -474,7 +478,7 @@ class DaCeIRBuilder(eve.NodeTranslator):
         )
 
         write_memlets = _get_tasklet_inout_memlets(
-            node,
+            parent,
             get_outputs=True,
             global_ctx=global_ctx,
             grid_subset=iteration_ctx.grid_subset,
@@ -482,7 +486,8 @@ class DaCeIRBuilder(eve.NodeTranslator):
         )
 
         tasklet = dcir.Tasklet(
-            decls=decls, stmts=mask_statement.body,
+            decls=[self.visit(decl, **kwargs) for decl in parent.declarations],
+            stmts=mask_statement.body,
             read_memlets=read_memlets, write_memlets=write_memlets
         )
         self._fix_memlet_array_access([*read_memlets, *write_memlets], tasklet, global_ctx, symbol_collector)
@@ -494,12 +499,14 @@ class DaCeIRBuilder(eve.NodeTranslator):
             decls=[], stmts=[mask_tasklet_statement],
             read_memlets=read_memlets, exported_scalars={mask_name}
         )
-        mask_state = self.to_state(mask_tasklet, grid_subset=iteration_ctx.grid_subset)
 
+        # TODO: think about extending dcir.Condition to contain `mask_state`
+        # (this would simplify the return type and might help in codegen too)
+        mask_state = self.to_state(mask_tasklet, grid_subset=iteration_ctx.grid_subset)
         condition = dcir.Condition(mask_name=mask_name, true_state=computation_state)
 
-        # wrap computation state in a nested SDFG
-        return self.to_dataflow([*mask_state, condition], global_ctx=global_ctx, symbol_collector=symbol_collector)
+        return [*mask_state, condition]
+
 
     def _process_backbox_tasklet(
         self,
@@ -574,18 +581,22 @@ class DaCeIRBuilder(eve.NodeTranslator):
         iteration_ctx = iteration_ctx.push_expansion_items(expansion_items)
         assert iteration_ctx.grid_subset == dcir.GridSubset.single_gridpoint()
 
-        # all_mask_statements = all(
-        #     isinstance(statement, oir.MaskStmt) for statement in node.body
-        # )
+        all_mask_statements = all(
+            isinstance(statement, oir.MaskStmt) for statement in node.body
+        )
 
         # Do something smart for known good cases. Otherwise, fall back to the
         # approach of shoving all statements into a single tasklet.
-        one_mask_statement = len(node.body) == 1 and isinstance(node.body[0], oir.MaskStmt)
+        # one_mask_statement = len(node.body) == 1 and isinstance(node.body[0], oir.MaskStmt)
         dcir_node = None
-        if one_mask_statement:
-            dcir_node = self._process_single_mask_statement(
-                node, global_ctx=global_ctx, iteration_ctx=iteration_ctx,
-                symbol_collector=symbol_collector, k_interval=k_interval, **kwargs)
+        if all_mask_statements:
+            subgraph_nodes = [
+                self._process_all_mask_statements(
+                    statement, parent=node, global_ctx=global_ctx, iteration_ctx=iteration_ctx,
+                    symbol_collector=symbol_collector, k_interval=k_interval, **kwargs)
+                for statement in node.body
+            ]
+            dcir_node = self.to_dataflow(subgraph_nodes, global_ctx=global_ctx, symbol_collector=symbol_collector)
         else:
             dcir_node = self._process_backbox_tasklet(
                 node, global_ctx=global_ctx, iteration_ctx=iteration_ctx,
