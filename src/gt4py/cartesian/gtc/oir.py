@@ -31,6 +31,10 @@ class Stmt(common.Stmt):
     pass
 
 
+class CodeBlock(common.BlockStmt[Stmt], Stmt):
+    pass
+
+
 class Literal(common.Literal, Expr):  # type: ignore
     pass
 
