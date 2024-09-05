@@ -398,72 +398,19 @@ class DaCeIRBuilder(eve.NodeTranslator):
             dtype=node.dtype,
         )
 
-    def visit_HorizontalExecution(
+    def _fix_memlet_array_access(
         self,
-        node: oir.HorizontalExecution,
-        *,
+        memlets: List[dcir.Memlet],
+        tasklet: dcir.Tasklet,
         global_ctx: "DaCeIRBuilder.GlobalContext",
-        iteration_ctx: "DaCeIRBuilder.IterationContext",
         symbol_collector: "DaCeIRBuilder.SymbolCollector",
-        loop_order,
-        k_interval,
-        **kwargs,
-    ):
-        # skip type checking due to https://github.com/python/mypy/issues/5485
-        extent = global_ctx.library_node.get_extents(node)  # type: ignore
-        decls = [self.visit(decl, **kwargs) for decl in node.declarations]
-        targets: Set[str] = set()
-        stmts = [
-            self.visit(
-                stmt,
-                targets=targets,
-                global_ctx=global_ctx,
-                symbol_collector=symbol_collector,
-                **kwargs,
-            )
-            for stmt in node.body
-        ]
-
-        stages_idx = next(
-            idx
-            for idx, item in enumerate(global_ctx.library_node.expansion_specification)
-            if isinstance(item, Stages)
-        )
-        expansion_items = global_ctx.library_node.expansion_specification[stages_idx + 1 :]
-
-        iteration_ctx = iteration_ctx.push_axes_extents(
-            {k: v for k, v in zip(dcir.Axis.dims_horizontal(), extent)}
-        )
-        iteration_ctx = iteration_ctx.push_expansion_items(expansion_items)
-
-        assert iteration_ctx.grid_subset == dcir.GridSubset.single_gridpoint()
-
-        read_memlets = _get_tasklet_inout_memlets(
-            node,
-            get_outputs=False,
-            global_ctx=global_ctx,
-            grid_subset=iteration_ctx.grid_subset,
-            k_interval=k_interval,
-        )
-
-        write_memlets = _get_tasklet_inout_memlets(
-            node,
-            get_outputs=True,
-            global_ctx=global_ctx,
-            grid_subset=iteration_ctx.grid_subset,
-            k_interval=k_interval,
-        )
-
-        dcir_node = dcir.Tasklet(
-            decls=decls, stmts=stmts, read_memlets=read_memlets, write_memlets=write_memlets
-        )
-
-        for memlet in [*read_memlets, *write_memlets]:
-            """
-            This loop handles the special case of a tasklet performing array access.
-            The memlet should pass the full array shape (no tiling) and
-            the tasklet expression for array access should use all explicit indexes.
-            """
+    ) -> None:
+        """
+        This function handles the special case of a tasklet performing array access.
+        The memlet should pass the full array shape (no tiling) and
+        the tasklet expression for array access should use all explicit indexes.
+        """
+        for memlet in memlets:
             array_ndims = len(global_ctx.arrays[memlet.field].shape)
             field_decl = global_ctx.library_node.field_decls[memlet.field]
             # calculate array subset on original memlet
@@ -480,7 +427,7 @@ class DaCeIRBuilder(eve.NodeTranslator):
             ]
             if len(memlet_data_index) < array_ndims:
                 reshape_memlet = False
-                for access_node in dcir_node.walk_values().if_isinstance(dcir.IndexAccess):
+                for access_node in tasklet.walk_values().if_isinstance(dcir.IndexAccess):
                     if access_node.data_index and access_node.name == memlet.connector:
                         access_node.data_index = memlet_data_index + access_node.data_index
                         assert len(access_node.data_index) == array_ndims
@@ -492,19 +439,114 @@ class DaCeIRBuilder(eve.NodeTranslator):
                     # set full shape on memlet
                     memlet.access_info = global_ctx.library_node.access_infos[memlet.field]
 
+    def visit_CodeBlock(
+        self,
+        node: oir.CodeBlock,
+        *,
+        parent: oir.HorizontalExecution,
+        global_ctx: "DaCeIRBuilder.GlobalContext",
+        iteration_ctx: "DaCeIRBuilder.IterationContext",
+        symbol_collector: "DaCeIRBuilder.SymbolCollector",
+        k_interval,
+        **kwargs: Any,
+    ):
+        declarations = [self.visit(declaration, **kwargs) for declaration in parent.declarations]
+        targets: Set[str] = set()
+        statements = [
+            self.visit(
+                statement,
+                targets=targets,
+                global_ctx=global_ctx,
+                symbol_collector=symbol_collector,
+                **kwargs,
+            )
+            for statement in node.body
+        ]
+
+        read_memlets = _get_tasklet_inout_memlets(
+            parent,
+            get_outputs=False,
+            global_ctx=global_ctx,
+            grid_subset=iteration_ctx.grid_subset,
+            k_interval=k_interval,
+        )
+
+        write_memlets = _get_tasklet_inout_memlets(
+            parent,
+            get_outputs=True,
+            global_ctx=global_ctx,
+            grid_subset=iteration_ctx.grid_subset,
+            k_interval=k_interval,
+        )
+
+        dcir_node = dcir.Tasklet(
+            decls=declarations,
+            stmts=statements,
+            read_memlets=read_memlets,
+            write_memlets=write_memlets,
+        )
+
+        self._fix_memlet_array_access(
+            [*read_memlets, *write_memlets], dcir_node, global_ctx, symbol_collector
+        )
+
+        return [dcir_node]
+
+    def visit_HorizontalExecution(
+        self,
+        node: oir.HorizontalExecution,
+        *,
+        global_ctx: "DaCeIRBuilder.GlobalContext",
+        iteration_ctx: "DaCeIRBuilder.IterationContext",
+        symbol_collector: "DaCeIRBuilder.SymbolCollector",
+        loop_order,
+        k_interval,
+        **kwargs,
+    ):
+        # skip type checking due to https://github.com/python/mypy/issues/5485
+        extent = global_ctx.library_node.get_extents(node)  # type: ignore
+
+        stages_idx = next(
+            idx
+            for idx, item in enumerate(global_ctx.library_node.expansion_specification)
+            if isinstance(item, Stages)
+        )
+        expansion_items = global_ctx.library_node.expansion_specification[stages_idx + 1 :]
+
+        iteration_ctx = iteration_ctx.push_axes_extents(
+            {k: v for k, v in zip(dcir.Axis.dims_horizontal(), extent)}
+        )
+        iteration_ctx = iteration_ctx.push_expansion_items(expansion_items)
+
+        assert iteration_ctx.grid_subset == dcir.GridSubset.single_gridpoint()
+
+        code_block = oir.CodeBlock(body=node.body, loc=node.loc)
+
+        dcir_nodes = self.visit(
+            code_block,
+            parent=node,
+            global_ctx=global_ctx,
+            iteration_ctx=iteration_ctx,
+            symbol_collector=symbol_collector,
+            k_interval=k_interval,
+            **kwargs,
+        )
+
         for item in reversed(expansion_items):
             iteration_ctx = iteration_ctx.pop()
-            dcir_node = self._process_iteration_item(
-                [dcir_node],
+            dcir_nodes = self._process_iteration_item(
+                dcir_nodes,
                 item,
                 global_ctx=global_ctx,
                 iteration_ctx=iteration_ctx,
                 symbol_collector=symbol_collector,
                 **kwargs,
             )
+
         # pop stages context (pushed with push_grid_subset)
         iteration_ctx.pop()
-        return dcir_node
+
+        return dcir_nodes
 
     def visit_VerticalLoopSection(
         self,
