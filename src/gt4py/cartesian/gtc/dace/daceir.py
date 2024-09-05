@@ -836,10 +836,31 @@ class IterationNode(eve.Node):
     grid_subset: GridSubset
 
 
+class Condition(eve.Node):
+    condition: Expr
+    true_state: List[NestedSDFG]
+
+    # false_state is unused for now due to how conditions are
+    # parsed at the oir-level
+    # NOTE We should clean this up in the future
+    false_state: List[NestedSDFG] = eve.field(default_factory=list)
+
+    # At the oir-level, we might pull the condition expression out
+    # into a separate variable. If we can, we "re-attach" this
+    # assignment to the condition.
+    # NOTE We should clean this up in the future
+    # condition_assignment: Optional[AssignStmt] = None
+
+
 class Tasklet(ComputationNode, IterationNode, eve.SymbolTableTrait):
     decls: List[LocalScalarDecl]
     stmts: List[Stmt]
     grid_subset: GridSubset = GridSubset.single_gridpoint()
+
+    @datamodels.validator("stmts")
+    def non_empty_list(self, attribute: datamodels.Attribute, v: List[Stmt]) -> None:
+        if len(v) < 1:
+            raise ValueError("Tasklet must contain at least one statement.")
 
 
 class DomainMap(ComputationNode, IterationNode):
@@ -858,11 +879,16 @@ class DomainLoop(IterationNode, ComputationNode):
     loop_states: List[Union[ComputationState, DomainLoop]]
 
 
+class WhileLoop(eve.Node):
+    condition: Expr
+    body: List[NestedSDFG]
+
+
 class NestedSDFG(ComputationNode, eve.SymbolTableTrait):
     label: eve.Coerced[eve.SymbolRef]
     field_decls: List[FieldDecl]
     symbol_decls: List[SymbolDecl]
-    states: List[Union[DomainLoop, ComputationState]]
+    states: List[Union[ComputationState, Condition, DomainLoop, WhileLoop]]
 
 
 # There are circular type references with string placeholders. These statements let datamodels resolve those.

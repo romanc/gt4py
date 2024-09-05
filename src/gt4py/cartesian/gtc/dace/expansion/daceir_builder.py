@@ -384,15 +384,19 @@ class DaCeIRBuilder(eve.NodeTranslator):
         return dcir.AssignStmt(left=left, right=right)
 
     def visit_MaskStmt(self, node: oir.MaskStmt, **kwargs: Any) -> dcir.MaskStmt:
-        return dcir.MaskStmt(
-            mask=self.visit(node.mask, is_target=False, **kwargs),
-            body=self.visit(node.body, **kwargs),
+        code_block = oir.CodeBlock(body=node.body, loc=node.loc, label=f"condition_{id(node)}")
+        body = self.visit(code_block, **kwargs)
+        return dcir.Condition(
+            condition=self.visit(node.mask, is_target=False, **kwargs),
+            true_state=body
         )
 
     def visit_While(self, node: oir.While, **kwargs: Any) -> dcir.While:
-        return dcir.While(
-            cond=self.visit(node.cond, is_target=False, **kwargs),
-            body=self.visit(node.body, **kwargs),
+        code_block = oir.CodeBlock(body=node.body, loc=node.loc, label=f"while_{id(node)}")
+        body = self.visit(code_block, **kwargs)
+        return dcir.WhileLoop(
+            condition=self.visit(node.cond, is_target=False, **kwargs),
+            body=body
         )
 
     def visit_Cast(self, node: oir.Cast, **kwargs: Any) -> dcir.Cast:
@@ -411,6 +415,164 @@ class DaCeIRBuilder(eve.NodeTranslator):
             dtype=node.dtype,
         )
 
+    def _fix_memlet_array_access(
+        self,
+        memlets: List[dcir.Memlet],
+        tasklet: dcir.Tasklet,
+        global_ctx: "DaCeIRBuilder.GlobalContext",
+        symbol_collector: "DaCeIRBuilder.SymbolCollector",
+    ) -> None:
+        """
+        This function handles the special case of a tasklet performing array access.
+        The memlet should pass the full array shape (no tiling) and
+        the tasklet expression for array access should use all explicit indexes.
+        """
+        for memlet in memlets:
+            array_ndims = len(global_ctx.arrays[memlet.field].shape)
+            field_decl = global_ctx.library_node.field_decls[memlet.field]
+            # calculate array subset on original memlet
+            memlet_subset = make_dace_subset(
+                global_ctx.library_node.access_infos[memlet.field],
+                memlet.access_info,
+                field_decl.data_dims,
+            )
+            # select index values for single-point grid access
+            memlet_data_index = [
+                dcir.Literal(value=str(dim_range[0]), dtype=common.DataType.INT32)
+                for dim_range, dim_size in zip(memlet_subset, memlet_subset.size())
+                if dim_size == 1
+            ]
+            if len(memlet_data_index) < array_ndims:
+                reshape_memlet = False
+                for access_node in tasklet.walk_values().if_isinstance(dcir.IndexAccess):
+                    if access_node.data_index and access_node.name == memlet.connector:
+                        access_node.data_index = memlet_data_index + access_node.data_index
+                        assert len(access_node.data_index) == array_ndims
+                        reshape_memlet = True
+                if reshape_memlet:
+                    # ensure that memlet symbols used for array indexing are defined in context
+                    for sym in memlet.access_info.grid_subset.free_symbols:
+                        symbol_collector.add_symbol(sym)
+                    # set full shape on memlet
+                    memlet.access_info = global_ctx.library_node.access_infos[memlet.field]
+
+    def visit_CodeBlock(
+        self,
+        node: oir.CodeBlock,
+        *,
+        global_ctx: "DaCeIRBuilder.GlobalContext",
+        iteration_ctx: "DaCeIRBuilder.IterationContext",
+        symbol_collector: "DaCeIRBuilder.SymbolCollector",
+        memlets: List[dcir.Memlet] = [],
+        declarations: List[dcir.LocalScalarDecl] = [],
+        k_interval,
+        **kwargs: Any,
+    ):
+        # declarations = [self.visit(declaration, **kwargs) for declaration in parent.declarations]
+        # declarations = []
+        targets: Set[str] = set()
+        kwargs.pop("targets", "dummy")
+        statements = [
+            self.visit(
+                statement,
+                targets=targets,
+                global_ctx=global_ctx,
+                symbol_collector=symbol_collector,
+                iteration_ctx=iteration_ctx,
+                k_interval=k_interval,
+                memlets=memlets,
+                declarations=declarations,
+                **kwargs,
+            )
+            for statement in node.body
+        ]
+
+        # gather all statements that aren't control flow (e.g. Condition or WhileLoop)
+        # put them in a tasklet
+        # and call "to_state" on it
+        # then, return new list with types that are either ComputationState, Condition, or WhileLoop
+
+        dace_nodes = []
+        current_block: List[dcir.Stmt] = []
+        for index, statement in enumerate(statements):
+            is_control_flow = isinstance(statement, dcir.Condition) or isinstance(statement, dcir.WhileLoop)
+            if not is_control_flow:
+                current_block.append(statement)
+            
+            last_statement = index == len(statements) - 1
+            if (is_control_flow or last_statement) and len(current_block) > 0:
+                local_declarations = []
+                read_memlets: List[dcir.Memlet] = []
+                write_memlets: List[dcir.Memlet]= []
+
+                for block_statement in current_block:
+                    # Match node access in this code block with read/write memlets calculated on
+                    # the full horizontal execution.
+                    # NOTE We should clean this up in the future.
+                    for access_node in block_statement.walk_values().if_isinstance(dcir.ScalarAccess, dcir.IndexAccess):
+                        symbol_name = access_node.name
+                        matches = [memlet for memlet in memlets if memlet.connector == symbol_name]
+
+                        if len(matches) > 1:
+                            raise RuntimeError("Found more than one matching memlet for symbol '%s'" % symbol_name)
+
+                        # Memlets aren't hashable, we thus can't use a set
+                        if len(matches) > 0 and matches[0].is_write and matches[0] not in write_memlets:
+                            write_memlets.append(matches[0].copy(update={}))
+                        if len(matches) > 0 and matches[0].is_read and matches[0] not in read_memlets:
+                            read_memlets.append(matches[0].copy(update={}))
+                    
+                    # Match the left side of assignment statements with local scalar declarations given
+                    # to the full horizontal execution.
+                    # NOTE We should clean this up in the future
+                    for assignment_statement in block_statement.walk_values().if_isinstance(dcir.AssignStmt):
+                        target_name = assignment_statement.left.name
+                        matches = [declaration for declaration in declarations if declaration.name == target_name]
+
+                        if len(matches) > 1:
+                            # yell if there's more than one match (there shouldn't be)
+                            raise RuntimeError("Found more than one matching local scalar declaration for target '%s'" % target_name)
+                        
+                        if len(matches) > 0:
+                            # remove from declarations and put into local_declarations
+                            local_declarations.append(matches[0])
+                            declarations.remove(matches[0])
+                            
+                            # Context:
+                            # We use this information in sdfg_builder: Whatever is on the left side of an
+                            # assignment statement is either a local scalar declarations (and thus
+                            # "exported" through a write access node) or something we need to read from
+                            # a read access node and pass into the tasklet.
+
+                # create a new tasklet
+                tasklet = dcir.Tasklet(
+                    decls=local_declarations,
+                    stmts=current_block,
+                    read_memlets=read_memlets,
+                    write_memlets=write_memlets,
+                )
+                self._fix_memlet_array_access(
+                    # See notes inside the function
+                    # NOTE We should clean this up with the node_access matching above
+                    [*read_memlets, *write_memlets], tasklet, global_ctx, symbol_collector
+                )
+
+                dace_nodes.append(*self.to_state(tasklet, grid_subset=iteration_ctx.grid_subset))
+
+                # reset block scope
+                current_block = []
+
+            # append control flow statement after new tasklet (if applicable)
+            if is_control_flow:
+                dace_nodes.append(statement)
+
+        return self.to_dataflow(
+            dace_nodes,
+            global_ctx=global_ctx,
+            symbol_collector=symbol_collector,
+            label=node.label,
+        )
+
     def visit_HorizontalExecution(
         self,
         node: oir.HorizontalExecution,
@@ -424,18 +586,6 @@ class DaCeIRBuilder(eve.NodeTranslator):
     ):
         # skip type checking due to https://github.com/python/mypy/issues/5485
         extent = global_ctx.library_node.get_extents(node)  # type: ignore
-        decls = [self.visit(decl, **kwargs) for decl in node.declarations]
-        targets: Set[str] = set()
-        stmts = [
-            self.visit(
-                stmt,
-                targets=targets,
-                global_ctx=global_ctx,
-                symbol_collector=symbol_collector,
-                **kwargs,
-            )
-            for stmt in node.body
-        ]
 
         stages_idx = next(
             idx
@@ -448,7 +598,6 @@ class DaCeIRBuilder(eve.NodeTranslator):
             {k: v for k, v in zip(dcir.Axis.dims_horizontal(), extent)}
         )
         iteration_ctx = iteration_ctx.push_expansion_items(expansion_items)
-
         assert iteration_ctx.grid_subset == dcir.GridSubset.single_gridpoint()
 
         read_memlets = _get_tasklet_inout_memlets(
@@ -467,57 +616,36 @@ class DaCeIRBuilder(eve.NodeTranslator):
             k_interval=k_interval,
         )
 
-        dcir_node = dcir.Tasklet(
-            decls=decls, stmts=stmts, read_memlets=read_memlets, write_memlets=write_memlets
-        )
+        local_scalar_declarations = [self.visit(declaration, **kwargs) for declaration in node.declarations]
 
-        for memlet in [*read_memlets, *write_memlets]:
-            """
-            This loop handles the special case of a tasklet performing array access.
-            The memlet should pass the full array shape (no tiling) and
-            the tasklet expression for array access should use all explicit indexes.
-            """
-            array_ndims = len(global_ctx.arrays[memlet.field].shape)
-            field_decl = global_ctx.library_node.field_decls[memlet.field]
-            # calculate array subset on original memlet
-            memlet_subset = make_dace_subset(
-                global_ctx.library_node.access_infos[memlet.field],
-                memlet.access_info,
-                field_decl.data_dims,
-            )
-            # select index values for single-point grid access
-            memlet_data_index = [
-                dcir.Literal(value=str(dim_range[0]), dtype=common.DataType.INT32)
-                for dim_range, dim_size in zip(memlet_subset, memlet_subset.size())
-                if dim_size == 1
-            ]
-            if len(memlet_data_index) < array_ndims:
-                reshape_memlet = False
-                for access_node in dcir_node.walk_values().if_isinstance(dcir.IndexAccess):
-                    if access_node.data_index and access_node.name == memlet.connector:
-                        access_node.data_index = memlet_data_index + access_node.data_index
-                        assert len(access_node.data_index) == array_ndims
-                        reshape_memlet = True
-                if reshape_memlet:
-                    # ensure that memlet symbols used for array indexing are defined in context
-                    for sym in memlet.access_info.grid_subset.free_symbols:
-                        symbol_collector.add_symbol(sym)
-                    # set full shape on memlet
-                    memlet.access_info = global_ctx.library_node.access_infos[memlet.field]
+        code_block = oir.CodeBlock(body=node.body, loc=node.loc, label=f"he_{id(node)}")
+
+        dcir_nodes = self.visit(
+            code_block,
+            global_ctx=global_ctx,
+            iteration_ctx=iteration_ctx,
+            symbol_collector=symbol_collector,
+            k_interval=k_interval,
+            memlets=[*read_memlets, *write_memlets],
+            declarations=local_scalar_declarations,
+            **kwargs,
+        )
 
         for item in reversed(expansion_items):
             iteration_ctx = iteration_ctx.pop()
-            dcir_node = self._process_iteration_item(
-                [dcir_node],
+            dcir_nodes = self._process_iteration_item(
+                dcir_nodes,
                 item,
                 global_ctx=global_ctx,
                 iteration_ctx=iteration_ctx,
                 symbol_collector=symbol_collector,
                 **kwargs,
             )
+
         # pop stages context (pushed with push_grid_subset)
         iteration_ctx.pop()
-        return dcir_node
+
+        return dcir_nodes
 
     def visit_VerticalLoopSection(
         self,
@@ -576,13 +704,14 @@ class DaCeIRBuilder(eve.NodeTranslator):
         self,
         nodes,
         *,
+        label: str,
         global_ctx: DaCeIRBuilder.GlobalContext,
         symbol_collector: DaCeIRBuilder.SymbolCollector,
     ):
         nodes = flatten_list(nodes)
         if all(isinstance(n, (dcir.NestedSDFG, dcir.DomainMap, dcir.Tasklet)) for n in nodes):
             return nodes
-        elif not all(isinstance(n, (dcir.ComputationState, dcir.DomainLoop)) for n in nodes):
+        elif not all(isinstance(n, (dcir.ComputationState, dcir.Condition, dcir.DomainLoop, dcir.WhileLoop)) for n in nodes):
             raise ValueError("Can't mix dataflow and state nodes on same level.")
 
         read_memlets, write_memlets, field_memlets = union_inout_memlets(nodes)
@@ -601,7 +730,7 @@ class DaCeIRBuilder(eve.NodeTranslator):
         ]
         return [
             dcir.NestedSDFG(
-                label=global_ctx.library_node.label,
+                label=label,
                 field_decls=field_decls,
                 # NestedSDFG must have same shape on input and output, matching corresponding
                 # nsdfg.sdfg's array shape
@@ -614,7 +743,7 @@ class DaCeIRBuilder(eve.NodeTranslator):
 
     def to_state(self, nodes, *, grid_subset: dcir.GridSubset):
         nodes = flatten_list(nodes)
-        if all(isinstance(n, (dcir.ComputationState, dcir.DomainLoop)) for n in nodes):
+        if all(isinstance(n, (dcir.ComputationState, dcir.Condition, dcir.DomainLoop, dcir.WhileLoop)) for n in nodes):
             return nodes
         elif all(isinstance(n, (dcir.NestedSDFG, dcir.DomainMap, dcir.Tasklet)) for n in nodes):
             return [dcir.ComputationState(computations=nodes, grid_subset=grid_subset)]
@@ -634,7 +763,8 @@ class DaCeIRBuilder(eve.NodeTranslator):
         grid_subset = iteration_ctx.grid_subset
         read_memlets, write_memlets, _ = union_inout_memlets(list(scope_nodes))
         scope_nodes = self.to_dataflow(
-            scope_nodes, global_ctx=global_ctx, symbol_collector=symbol_collector
+            scope_nodes, global_ctx=global_ctx, symbol_collector=symbol_collector,
+            label=f"map_{id(item)}",
         )
 
         ranges = []
