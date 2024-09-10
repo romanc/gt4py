@@ -371,15 +371,19 @@ class DaCeIRBuilder(eve.NodeTranslator):
         return dcir.AssignStmt(left=left, right=right)
 
     def visit_MaskStmt(self, node: oir.MaskStmt, **kwargs: Any) -> dcir.MaskStmt:
-        return dcir.MaskStmt(
-            mask=self.visit(node.mask, is_target=False, **kwargs),
-            body=self.visit(node.body, **kwargs),
+        code_block = oir.CodeBlock(body=node.body, loc=node.loc)
+        body = self.visit(code_block, **kwargs)
+        return dcir.Condition(
+            condition=self.visit(node.mask, is_target=False, **kwargs),
+            true_state=body
         )
 
     def visit_While(self, node: oir.While, **kwargs: Any) -> dcir.While:
-        return dcir.While(
-            cond=self.visit(node.cond, is_target=False, **kwargs),
-            body=self.visit(node.body, **kwargs),
+        code_block = oir.CodeBlock(body=node.body, loc=node.loc)
+        body = self.visit(code_block, **kwargs)
+        return dcir.WhileLoop(
+            condition=self.visit(node.cond, is_target=False, **kwargs),
+            body=body
         )
 
     def visit_Cast(self, node: oir.Cast, **kwargs: Any) -> dcir.Cast:
@@ -452,45 +456,72 @@ class DaCeIRBuilder(eve.NodeTranslator):
     ):
         declarations = [self.visit(declaration, **kwargs) for declaration in parent.declarations]
         targets: Set[str] = set()
+        kwargs.pop("targets", "dummy")
         statements = [
             self.visit(
                 statement,
                 targets=targets,
                 global_ctx=global_ctx,
                 symbol_collector=symbol_collector,
+                iteration_ctx=iteration_ctx,
+                k_interval=k_interval,
+                parent=parent,
                 **kwargs,
             )
             for statement in node.body
         ]
 
-        read_memlets = _get_tasklet_inout_memlets(
-            parent,
-            get_outputs=False,
-            global_ctx=global_ctx,
-            grid_subset=iteration_ctx.grid_subset,
-            k_interval=k_interval,
-        )
+        # gather all statements that aren't control flow (e.g. Condition or WhileLoop)
+        # put them in a tasklet
+        # and call "to_state" on it
+        # then, return new list with types that are either ComputationState, Condition, or WhileLoop
 
-        write_memlets = _get_tasklet_inout_memlets(
-            parent,
-            get_outputs=True,
-            global_ctx=global_ctx,
-            grid_subset=iteration_ctx.grid_subset,
-            k_interval=k_interval,
-        )
+        dace_nodes = []
+        current_block = []
+        for index, statement in enumerate(statements):
+            is_control_flow = isinstance(statement, dcir.Condition) or isinstance(statement, dcir.WhileLoop)
+            if not is_control_flow:
+                current_block.append(statement)
+            
+            last_statement = index == len(statements) - 1
+            if (is_control_flow and len(current_block) > 0) or last_statement:
+                # create a new tasklet
+                read_memlets = _get_tasklet_inout_memlets(
+                    parent,
+                    get_outputs=False,
+                    global_ctx=global_ctx,
+                    grid_subset=iteration_ctx.grid_subset,
+                    k_interval=k_interval,
+                )
 
-        dcir_node = dcir.Tasklet(
-            decls=declarations,
-            stmts=statements,
-            read_memlets=read_memlets,
-            write_memlets=write_memlets,
-        )
+                write_memlets = _get_tasklet_inout_memlets(
+                    parent,
+                    get_outputs=True,
+                    global_ctx=global_ctx,
+                    grid_subset=iteration_ctx.grid_subset,
+                    k_interval=k_interval,
+                )
 
-        self._fix_memlet_array_access(
-            [*read_memlets, *write_memlets], dcir_node, global_ctx, symbol_collector
-        )
+                tasklet = dcir.Tasklet(
+                    decls=declarations,
+                    stmts=current_block,
+                    read_memlets=read_memlets,
+                    write_memlets=write_memlets,
+                )
 
-        return [dcir_node]
+                self._fix_memlet_array_access(
+                    [*read_memlets, *write_memlets], tasklet, global_ctx, symbol_collector
+                )
+                dace_nodes.append(*self.to_state(tasklet, grid_subset=iteration_ctx.grid_subset))
+
+                # reset block scope
+                current_block = []
+
+            # append control flow statement after new tasklet (if applicable)
+            if is_control_flow:
+                dace_nodes.append(statement)
+
+        return dace_nodes
 
     def visit_HorizontalExecution(
         self,
@@ -517,7 +548,6 @@ class DaCeIRBuilder(eve.NodeTranslator):
             {k: v for k, v in zip(dcir.Axis.dims_horizontal(), extent)}
         )
         iteration_ctx = iteration_ctx.push_expansion_items(expansion_items)
-
         assert iteration_ctx.grid_subset == dcir.GridSubset.single_gridpoint()
 
         code_block = oir.CodeBlock(body=node.body, loc=node.loc)
@@ -611,7 +641,7 @@ class DaCeIRBuilder(eve.NodeTranslator):
         nodes = flatten_list(nodes)
         if all(isinstance(n, (dcir.NestedSDFG, dcir.DomainMap, dcir.Tasklet)) for n in nodes):
             return nodes
-        elif not all(isinstance(n, (dcir.ComputationState, dcir.DomainLoop)) for n in nodes):
+        elif not all(isinstance(n, (dcir.ComputationState, dcir.Condition, dcir.DomainLoop, dcir.WhileLoop)) for n in nodes):
             raise ValueError("Can't mix dataflow and state nodes on same level.")
 
         read_memlets, write_memlets, field_memlets = union_inout_memlets(nodes)
@@ -643,7 +673,7 @@ class DaCeIRBuilder(eve.NodeTranslator):
 
     def to_state(self, nodes, *, grid_subset: dcir.GridSubset):
         nodes = flatten_list(nodes)
-        if all(isinstance(n, (dcir.ComputationState, dcir.DomainLoop)) for n in nodes):
+        if all(isinstance(n, (dcir.ComputationState, dcir.Condition, dcir.DomainLoop, dcir.WhileLoop)) for n in nodes):
             return nodes
         elif all(isinstance(n, (dcir.NestedSDFG, dcir.DomainMap, dcir.Tasklet)) for n in nodes):
             return [dcir.ComputationState(computations=nodes, grid_subset=grid_subset)]

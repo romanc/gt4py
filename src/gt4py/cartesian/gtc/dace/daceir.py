@@ -838,8 +838,8 @@ class IterationNode(eve.Node):
 
 class Condition(eve.Node):
     condition: Expr
-    true_state: List[ComputationState]
-    false_state: List[ComputationState] = eve.field(default_factory=list)
+    true_state: List[Union[ComputationState, Condition, WhileLoop]]
+    false_state: List[Union[ComputationState, Condition, WhileLoop]] = eve.field(default_factory=list)
 
 
 class Tasklet(ComputationNode, IterationNode, eve.SymbolTableTrait):
@@ -864,16 +864,16 @@ class DomainLoop(IterationNode, ComputationNode):
     loop_states: List[Union[ComputationState, DomainLoop]]
 
 
-class WhileLoop(IterationNode, ComputationNode):
+class WhileLoop(eve.Node):
     condition: Expr
-    body: List[ComputationState]
+    body: List[Union[ComputationState, Condition, WhileLoop]]
 
 
 class NestedSDFG(ComputationNode, eve.SymbolTableTrait):
     label: eve.Coerced[eve.SymbolRef]
     field_decls: List[FieldDecl]
     symbol_decls: List[SymbolDecl]
-    states: List[Union[Condition, DomainLoop, WhileLoop, ComputationState]]
+    states: List[Union[ComputationState, Condition, DomainLoop, WhileLoop]]
 
 
 # There are circular type references with string placeholders. These statements let datamodels resolve those.
