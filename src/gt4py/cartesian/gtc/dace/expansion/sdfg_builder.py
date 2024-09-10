@@ -35,8 +35,8 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         state: dace.SDFGState
         state_stack: List[dace.SDFGState] = dataclasses.field(default_factory=list)
 
-        def add_state(self):
-            new_state = self.sdfg.add_state()
+        def add_state(self, *, label: str | None = None):
+            new_state = self.sdfg.add_state(label)
             for edge in self.sdfg.out_edges(self.state):
                 self.sdfg.remove_edge(edge)
                 self.sdfg.add_edge(new_state, edge.dst, edge.data)
@@ -46,7 +46,7 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
 
         def add_loop(self, index_range: dcir.Range):
             loop_state = self.sdfg.add_state()
-            after_state = self.sdfg.add_state()
+            after_state = self.sdfg.add_state("loop_after")
             for edge in self.sdfg.out_edges(self.state):
                 self.sdfg.remove_edge(edge)
                 self.sdfg.add_edge(after_state, edge.dst, edge.data)
@@ -77,6 +77,77 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
             return self
 
         def pop_loop(self):
+            self._pop_last("loop_after")
+
+        def add_condition(self, node: dcir.Condition):
+            """ Inserts a condition state after the current self.state.
+                The condition state is connected to a true_state and a false_state based on
+                a temporary local variable identified by `node.mask_name`. Both states then merge
+                into a merge_state.
+                self.state is set to true_state and merge_state / false_state are pushed to
+                the stack of states; to be popped with `pop_condition_{false, after}()`.
+            """
+            merge_state = self.sdfg.add_state("condition_after")
+            for edge in self.sdfg.out_edges(self.state):
+                self.sdfg.remove_edge(edge)
+                self.sdfg.add_edge(merge_state, edge.dst, edge.data)
+
+            condition_state = self.sdfg.add_state("condition")
+            self.sdfg.add_edge(self.state, condition_state, dace.InterstateEdge())
+
+            true_state = self.sdfg.add_state("condition_true")
+            # TODO fix condition
+            self.sdfg.add_edge(condition_state, true_state, dace.InterstateEdge(condition=node.condition.name))
+            self.sdfg.add_edge(true_state, merge_state, dace.InterstateEdge())
+
+            false_state = self.sdfg.add_state("condition_false")
+            self.sdfg.add_edge(condition_state, false_state, dace.InterstateEdge(condition=f"not {node.condition.name}"))
+            self.sdfg.add_edge(false_state, merge_state, dace.InterstateEdge())
+
+            self.state_stack.append(merge_state)
+            self.state_stack.append(false_state)
+            self.state = true_state
+            return self
+
+        def pop_condition_false(self):
+            self._pop_last("condition_false")
+
+        def pop_condition_after(self):
+            self._pop_last("condition_after")
+
+        def add_while(self, node: dcir.WhileLoop):
+            """ Inserts a while loop after the current self.state.
+                ...
+            """
+            after_state = self.sdfg.add_state("while_after")
+            for edge in self.sdfg.out_edges(self.state):
+                self.sdfg.remove_edge(edge)
+                self.sdfg.add_edge(after_state, edge.dst, edge.data)
+
+            guard_state = self.sdfg.add_state("while_guard")
+            # TODO allow for potential initialization of a loop state variable
+            self.sdfg.add_edge(self.state, guard_state, dace.InterstateEdge())
+
+            loop_state = self.sdfg.add_state("while_loop")
+            # TODO fix condition (i.e. this probably doesn't just work out of the box)
+            self.sdfg.add_edge(guard_state, loop_state, dace.InterstateEdge(condition=node.condition.name))
+            self.sdfg.add_edge(guard_state, after_state, dace.InterstateEdge(condition=f"not {node.condition.name}"))
+
+            self.state_stack.append(after_state)
+            self.state_stack.append(loop_state)
+            self.state = guard_state
+            return self
+
+        def pop_while_loop(self):
+            self._pop_last("while_loop")
+
+        def pop_while_after(self):
+            self._pop_last("while_after")
+
+        def _pop_last(self, node_label: str | None = None) -> None:
+            if node_label:
+                assert self.state_stack[-1].label.startswith(node_label)
+
             self.state = self.state_stack[-1]
             del self.state_stack[-1]
 
@@ -129,6 +200,48 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
             sdfg_ctx.state.add_edge(
                 exit_node, None, *node_ctx.output_node_and_conns[None], dace.Memlet()
             )
+
+    def visit_WhileLoop(
+        self,
+        node: dcir.WhileLoop,
+        *,
+        sdfg_ctx: "StencilComputationSDFGBuilder.SDFGContext",
+        node_ctx: "StencilComputationSDFGBuilder.NodeContext",
+        symtable: ChainMap[eve.SymbolRef, dcir.Decl],
+        **kwargs: Any,
+    ) -> None:
+        sdfg_ctx.add_while(node)
+        assert sdfg_ctx.state.label.startswith("while_guard")
+        # Do we need to do anything on the guard state?
+
+        sdfg_ctx.pop_while_loop()
+        assert sdfg_ctx.state.label.startswith("while_loop")
+        for state in node.body:
+            self.visit(state, sdfg_ctx=sdfg_ctx, node_ctx=node_ctx, symtable=symtable, **kwargs)
+
+        sdfg_ctx.pop_while_after()
+        assert sdfg_ctx.state.label.startswith("while_after")
+
+    def visit_Condition(
+        self,
+        node: dcir.Condition,
+        *,
+        sdfg_ctx: "StencilComputationSDFGBuilder.SDFGContext",
+        node_ctx: "StencilComputationSDFGBuilder.NodeContext",
+        symtable: ChainMap[eve.SymbolRef, dcir.Decl],
+        **kwargs: Any,
+    ) -> None:
+        sdfg_ctx.add_condition(node)
+        assert sdfg_ctx.state.label.startswith("condition_true")
+        for state in node.true_state:
+            self.visit(state, sdfg_ctx=sdfg_ctx, node_ctx=node_ctx, symtable=symtable, **kwargs)
+
+        sdfg_ctx.pop_condition_false()
+        for state in node.false_state:
+            self.visit(state, sdfg_ctx=sdfg_ctx, node_ctx=node_ctx, symtable=symtable, **kwargs)
+
+        sdfg_ctx.pop_condition_after()
+        assert sdfg_ctx.state.label.startswith("condition_after")
 
     def visit_Tasklet(
         self,
@@ -279,6 +392,9 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
             node_ctx = StencilComputationSDFGBuilder.NodeContext(
                 input_node_and_conns=read_acc_and_conn, output_node_and_conns=write_acc_and_conn
             )
+            if "node_ctx" in kwargs:
+                # delete parent node_ctx if passed down (because we are setting a new context)
+                del kwargs["node_ctx"]
             self.visit(computation, sdfg_ctx=sdfg_ctx, node_ctx=node_ctx, **kwargs)
 
     def visit_FieldDecl(
@@ -333,12 +449,12 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         symbol_mapping = {decl.name: decl.to_dace_symbol() for decl in node.symbol_decls}
 
         for computation_state in node.states:
-            self.visit(computation_state, sdfg_ctx=inner_sdfg_ctx, symtable=symtable, **kwargs)
+            self.visit(computation_state, sdfg_ctx=inner_sdfg_ctx, symtable=symtable, node_ctx=node_ctx, **kwargs)
 
         if sdfg_ctx is not None and node_ctx is not None:
             nsdfg = sdfg_ctx.state.add_nested_sdfg(
                 sdfg=sdfg,
-                parent=None,
+                parent=sdfg_ctx.sdfg,
                 inputs=node.input_connectors,
                 outputs=node.output_connectors,
                 symbol_mapping=symbol_mapping,
