@@ -846,6 +846,7 @@ class Tasklet(ComputationNode, IterationNode, eve.SymbolTableTrait):
     decls: List[LocalScalarDecl]
     stmts: List[Stmt]
     grid_subset: GridSubset = GridSubset.single_gridpoint()
+    extra_connectors_out: set[str] = eve.field(default_factory=set)
 
 
 class DomainMap(ComputationNode, IterationNode):

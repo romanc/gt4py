@@ -16,6 +16,7 @@ import dace.library
 import dace.subsets
 
 from gt4py import eve
+from gt4py.cartesian.gtc import common
 from gt4py.cartesian.gtc.dace import daceir as dcir
 from gt4py.cartesian.gtc.dace.expansion.tasklet_codegen import TaskletCodegen
 from gt4py.cartesian.gtc.dace.expansion.utils import get_dace_debuginfo
@@ -115,7 +116,7 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         def pop_condition_after(self):
             self._pop_last("condition_after")
 
-        def add_while(self, node: dcir.WhileLoop):
+        def add_while(self, condition_name: str):
             """ Inserts a while loop after the current self.state.
                 ...
             """
@@ -124,19 +125,39 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
                 self.sdfg.remove_edge(edge)
                 self.sdfg.add_edge(after_state, edge.dst, edge.data)
 
+            # initialize loop condition
+            init_state = self.sdfg.add_state("while_init")
+            # TODO
+            # - add tasklet to evaluate node.condition
+            # init_state.add_tasklet({}, {"tmp_name"}, "tmp_name")
+            # - maybe easiest to change node.condition to computation state
+            #   and generate tasklet in daceir_builder already
+            # - here, we just need the name of the tmp variable such that we can
+            #   promote it to a symbol
+            # - not sure how to get tmp name. In a first version, just add it to WhileLoop
+            self.sdfg.add_edge(self.state, init_state, dace.InterstateEdge())
+
             guard_state = self.sdfg.add_state("while_guard")
-            # TODO allow for potential initialization of a loop state variable
-            self.sdfg.add_edge(self.state, guard_state, dace.InterstateEdge())
+            # TODO assign temporary from init_state to symbol
+            self.sdfg.add_edge(init_state, guard_state,
+                               dace.InterstateEdge(assignments=dict(loop_condition=condition_name)))
 
             loop_state = self.sdfg.add_state("while_loop")
-            # TODO fix condition (i.e. this probably doesn't just work out of the box)
-            self.sdfg.add_edge(guard_state, loop_state, dace.InterstateEdge(condition=node.condition.name))
-            self.sdfg.add_edge(guard_state, after_state, dace.InterstateEdge(condition=f"not {node.condition.name}"))
+            self.sdfg.add_edge(guard_state, loop_state, dace.InterstateEdge(condition="loop_condition"))
+            # loop back to init_state to re-evaluate the loop condition
+            self.sdfg.add_edge(loop_state, init_state, dace.InterstateEdge())
+
+            # exit the loop
+            self.sdfg.add_edge(guard_state, after_state, dace.InterstateEdge(condition="not loop_condition"))
 
             self.state_stack.append(after_state)
             self.state_stack.append(loop_state)
-            self.state = guard_state
+            self.state_stack.append(guard_state)
+            self.state = init_state
             return self
+
+        def pop_while_guard(self):
+            self._pop_last("while_guard")
 
         def pop_while_loop(self):
             self._pop_last("while_loop")
@@ -210,9 +231,30 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         symtable: ChainMap[eve.SymbolRef, dcir.Decl],
         **kwargs: Any,
     ) -> None:
-        sdfg_ctx.add_while(node)
+        # define tasklet to evaluate node.condition
+        # tasklet = dcir.Tasklet(body = node.condition)
+        # -> get connector name
+        tmp_condition_name = f"loop_condition_{id(node)}"
+        sdfg_ctx.sdfg.add_scalar(tmp_condition_name, dtype=dace.bool, transient=True)
+        tmp_access = dcir.ScalarAccess(name=tmp_condition_name, dtype=common.DataType.BOOL)
+        condition_tasklet = dcir.Tasklet(
+            decls = [],
+            stmts=[dcir.AssignStmt(left=tmp_access, right=node.condition)],
+            read_memlets=[], write_memlets=[], extra_connectors_out={tmp_condition_name}
+        )
+        sdfg_ctx.add_while(tmp_condition_name)
+        assert sdfg_ctx.state.label.startswith("while_init")
+        # add tasklet
+        tasklet = self.visit(
+            condition_tasklet, sdfg_ctx=sdfg_ctx, node_ctx=node_ctx,
+            symtable=symtable, **kwargs)
+        access_node = sdfg_ctx.state.add_access(tmp_condition_name)
+        sdfg_ctx.state.add_memlet_path(
+            tasklet, access_node, src_conn=tmp_condition_name, memlet=dace.Memlet(tmp_condition_name)
+        )
+
+        sdfg_ctx.pop_while_guard()
         assert sdfg_ctx.state.label.startswith("while_guard")
-        # Do we need to do anything on the guard state?
 
         sdfg_ctx.pop_while_loop()
         assert sdfg_ctx.state.label.startswith("while_loop")
@@ -251,7 +293,7 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         node_ctx: "StencilComputationSDFGBuilder.NodeContext",
         symtable: ChainMap[eve.SymbolRef, dcir.Decl],
         **kwargs,
-    ) -> None:
+    ):
         code = TaskletCodegen.apply_codegen(
             node,
             read_memlets=node.read_memlets,
@@ -264,7 +306,7 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
             name=f"{sdfg_ctx.sdfg.label}_Tasklet",
             code=code,
             inputs=set(memlet.connector for memlet in node.read_memlets),
-            outputs=set(memlet.connector for memlet in node.write_memlets),
+            outputs=node.extra_connectors_out.union(set(memlet.connector for memlet in node.write_memlets)),
             debuginfo=get_dace_debuginfo(node),
         )
 
@@ -287,6 +329,8 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         StencilComputationSDFGBuilder._add_empty_edges(
             tasklet, tasklet, sdfg_ctx=sdfg_ctx, node_ctx=node_ctx
         )
+
+        return tasklet
 
     def visit_Range(self, node: dcir.Range, **kwargs) -> Dict[str, str]:
         start, end = node.interval.to_dace_symbolic()
