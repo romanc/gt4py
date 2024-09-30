@@ -8,7 +8,7 @@
 
 import dataclasses
 from dataclasses import dataclass
-from typing import Any, ChainMap, Dict, List, Optional, Set, Tuple
+from typing import Any, ChainMap, Dict, List, Optional, Set, Tuple, Union
 
 import dace
 import dace.data
@@ -80,7 +80,10 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         def pop_loop(self):
             self._pop_last("loop_after")
 
-        def add_condition(self, node: dcir.Condition):
+        def add_condition(
+                self,
+                tmp_condition_name: str
+            ):
             """ Inserts a condition state after the current self.state.
                 The condition state is connected to a true_state and a false_state based on
                 a temporary local variable identified by `node.mask_name`. Both states then merge
@@ -93,22 +96,31 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
                 self.sdfg.remove_edge(edge)
                 self.sdfg.add_edge(merge_state, edge.dst, edge.data)
 
-            condition_state = self.sdfg.add_state("condition")
-            self.sdfg.add_edge(self.state, condition_state, dace.InterstateEdge())
+            # evaluate node condition
+            init_state = self.sdfg.add_state("condition_init")
+            self.sdfg.add_edge(self.state, init_state, dace.InterstateEdge())
+
+            # promote condition (from init_state) to symbol
+            condition_state = self.sdfg.add_state("condition_guard")
+            self.sdfg.add_edge(init_state, condition_state,
+                               dace.InterstateEdge(assignments=dict(if_condition=tmp_condition_name)))
 
             true_state = self.sdfg.add_state("condition_true")
-            # TODO fix condition
-            self.sdfg.add_edge(condition_state, true_state, dace.InterstateEdge(condition=node.condition.name))
+            self.sdfg.add_edge(condition_state, true_state, dace.InterstateEdge(condition="if_condition"))
             self.sdfg.add_edge(true_state, merge_state, dace.InterstateEdge())
 
             false_state = self.sdfg.add_state("condition_false")
-            self.sdfg.add_edge(condition_state, false_state, dace.InterstateEdge(condition=f"not {node.condition.name}"))
+            self.sdfg.add_edge(condition_state, false_state, dace.InterstateEdge(condition=f"not if_condition"))
             self.sdfg.add_edge(false_state, merge_state, dace.InterstateEdge())
 
             self.state_stack.append(merge_state)
             self.state_stack.append(false_state)
-            self.state = true_state
+            self.state_stack.append(true_state)
+            self.state = init_state
             return self
+
+        def pop_condition_true(self):
+            self._pop_last("condition_true")
 
         def pop_condition_false(self):
             self._pop_last("condition_false")
@@ -116,7 +128,10 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         def pop_condition_after(self):
             self._pop_last("condition_after")
 
-        def add_while(self, condition_name: str):
+        def add_while(
+                self,
+                tmp_condition_name: str
+            ):
             """ Inserts a while loop after the current self.state.
                 ...
             """
@@ -125,22 +140,14 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
                 self.sdfg.remove_edge(edge)
                 self.sdfg.add_edge(after_state, edge.dst, edge.data)
 
-            # initialize loop condition
+            # evaluate loop condition
             init_state = self.sdfg.add_state("while_init")
-            # TODO
-            # - add tasklet to evaluate node.condition
-            # init_state.add_tasklet({}, {"tmp_name"}, "tmp_name")
-            # - maybe easiest to change node.condition to computation state
-            #   and generate tasklet in daceir_builder already
-            # - here, we just need the name of the tmp variable such that we can
-            #   promote it to a symbol
-            # - not sure how to get tmp name. In a first version, just add it to WhileLoop
             self.sdfg.add_edge(self.state, init_state, dace.InterstateEdge())
 
+            # promote condition (from init_state) to symbol
             guard_state = self.sdfg.add_state("while_guard")
-            # TODO assign temporary from init_state to symbol
             self.sdfg.add_edge(init_state, guard_state,
-                               dace.InterstateEdge(assignments=dict(loop_condition=condition_name)))
+                               dace.InterstateEdge(assignments=dict(loop_condition=tmp_condition_name)))
 
             loop_state = self.sdfg.add_state("while_loop")
             self.sdfg.add_edge(guard_state, loop_state, dace.InterstateEdge(condition="loop_condition"))
@@ -171,6 +178,17 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
 
             self.state = self.state_stack[-1]
             del self.state_stack[-1]
+
+        def add_tmp_conditional(
+                self,
+                node: Union[dcir.Condition, dcir.WhileLoop]
+            ) -> str:
+            # define tasklet to evaluate node.condition
+            # tasklet = dcir.Tasklet(body = node.condition)
+            # -> get connector name
+            tmp_condition_name = f"tmp_conditional_{id(node)}"
+            self.sdfg.add_scalar(tmp_condition_name, dtype=dace.bool, transient=True)
+            return tmp_condition_name
 
     def visit_Memlet(
         self,
@@ -231,28 +249,12 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         symtable: ChainMap[eve.SymbolRef, dcir.Decl],
         **kwargs: Any,
     ) -> None:
-        # define tasklet to evaluate node.condition
-        # tasklet = dcir.Tasklet(body = node.condition)
-        # -> get connector name
-        tmp_condition_name = f"loop_condition_{id(node)}"
-        sdfg_ctx.sdfg.add_scalar(tmp_condition_name, dtype=dace.bool, transient=True)
-        tmp_access = dcir.ScalarAccess(name=tmp_condition_name, dtype=common.DataType.BOOL)
-        condition_tasklet = dcir.Tasklet(
-            decls = [],
-            stmts=[dcir.AssignStmt(left=tmp_access, right=node.condition)],
-            read_memlets=[], write_memlets=[], extra_connectors_out={tmp_condition_name}
-        )
+        tmp_condition_name = sdfg_ctx.add_tmp_conditional(node)
         sdfg_ctx.add_while(tmp_condition_name)
         assert sdfg_ctx.state.label.startswith("while_init")
-        # add tasklet
-        tasklet = self.visit(
-            condition_tasklet, sdfg_ctx=sdfg_ctx, node_ctx=node_ctx,
-            symtable=symtable, **kwargs)
-        access_node = sdfg_ctx.state.add_access(tmp_condition_name)
-        sdfg_ctx.state.add_memlet_path(
-            tasklet, access_node, src_conn=tmp_condition_name, memlet=dace.Memlet(tmp_condition_name)
-        )
+        self._add_condition_evaluation_tasklet(tmp_condition_name, node, sdfg_ctx=sdfg_ctx, node_ctx=node_ctx, symtable=symtable, **kwargs)
 
+        # Cleanup: we might not need this state on the stack anymore
         sdfg_ctx.pop_while_guard()
         assert sdfg_ctx.state.label.startswith("while_guard")
 
@@ -273,7 +275,17 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         symtable: ChainMap[eve.SymbolRef, dcir.Decl],
         **kwargs: Any,
     ) -> None:
-        sdfg_ctx.add_condition(node)
+        # NOTE (to myself)
+        # for conditionals, we can can hide the whole complexity in `add_condition()` because
+        # the condition is evaluated only once and the `else` branch just uses the negated version
+        # of the `if` branch. Not as complicated as with `while` loops.
+        # Nevertheless, in a subsequent version, we should clean this up.
+        tmp_condition_name = sdfg_ctx.add_tmp_conditional(node)
+        sdfg_ctx.add_condition(tmp_condition_name)
+        assert sdfg_ctx.state.label.startswith("condition_init")
+        self._add_condition_evaluation_tasklet(tmp_condition_name, node, sdfg_ctx=sdfg_ctx, node_ctx=node_ctx, symtable=symtable, **kwargs)
+
+        sdfg_ctx.pop_condition_true()
         assert sdfg_ctx.state.label.startswith("condition_true")
         for state in node.true_state:
             self.visit(state, sdfg_ctx=sdfg_ctx, node_ctx=node_ctx, symtable=symtable, **kwargs)
@@ -533,3 +545,27 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
             )
 
         return nsdfg
+
+    def _add_condition_evaluation_tasklet(
+            self,
+            tmp_condition_name: str,
+            node: Union[dcir.Condition, dcir.WhileLoop],
+            *,
+            sdfg_ctx: "StencilComputationSDFGBuilder.SDFGContext",
+            node_ctx: "StencilComputationSDFGBuilder.NodeContext",
+            symtable: ChainMap[eve.SymbolRef, Any],
+            **kwargs
+        ):
+        tmp_access = dcir.ScalarAccess(name=tmp_condition_name, dtype=common.DataType.BOOL)
+        condition_tasklet = dcir.Tasklet(
+            decls = [],
+            stmts=[dcir.AssignStmt(left=tmp_access, right=node.condition)],
+            read_memlets=[], write_memlets=[], extra_connectors_out={tmp_condition_name}
+        )
+        tasklet = self.visit(
+            condition_tasklet, sdfg_ctx=sdfg_ctx, node_ctx=node_ctx,
+            symtable=symtable, **kwargs)
+        access_node = sdfg_ctx.state.add_access(tmp_condition_name)
+        sdfg_ctx.state.add_memlet_path(
+            tasklet, access_node, src_conn=tmp_condition_name, memlet=dace.Memlet(tmp_condition_name)
+        )
