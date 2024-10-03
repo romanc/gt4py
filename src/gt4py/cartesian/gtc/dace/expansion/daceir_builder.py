@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from gt4py.cartesian.gtc.dace.nodes import StencilComputation
 
 
-def _access_iter(node: oir.HorizontalExecution, get_outputs: bool):
+def _access_iter(node: Union[oir.Expr, oir.Stmt], get_outputs: bool):
     if get_outputs:
         iterator = filter(
             lambda node: isinstance(node, oir.FieldAccess),
@@ -70,7 +70,7 @@ def _access_iter(node: oir.HorizontalExecution, get_outputs: bool):
 
 
 def _get_tasklet_inout_memlets(
-    node: oir.HorizontalExecution,
+    node: Union[oir.Expr, oir.Stmt],
     *,
     get_outputs: bool,
     global_ctx: "DaCeIRBuilder.GlobalContext",
@@ -85,7 +85,7 @@ def _get_tasklet_inout_memlets(
         **kwargs,
     )
 
-    res = list()
+    memlets = list()
     for name, offset, tasklet_symbol in _access_iter(node, get_outputs=get_outputs):
         access_info = access_infos[name]
         if not access_info.variable_offset_axes:
@@ -95,15 +95,16 @@ def _get_tasklet_inout_memlets(
                     axis, extent=(offset_dict[axis.lower()], offset_dict[axis.lower()])
                 )
 
-        memlet = dcir.Memlet(
-            field=name,
-            connector=tasklet_symbol,
-            access_info=access_info,
-            is_read=not get_outputs,
-            is_write=get_outputs,
+        memlets.append(
+            dcir.Memlet(
+                field=name,
+                connector=tasklet_symbol,
+                access_info=access_info,
+                is_read=not get_outputs,
+                is_write=get_outputs,
+            )
         )
-        res.append(memlet)
-    return res
+    return memlets
 
 
 def _all_stmts_same_region(scope_nodes, axis: dcir.Axis, interval):
@@ -454,7 +455,8 @@ class DaCeIRBuilder(eve.NodeTranslator):
         k_interval,
         **kwargs: Any,
     ):
-        declarations = [self.visit(declaration, **kwargs) for declaration in parent.declarations]
+        # declarations = [self.visit(declaration, **kwargs) for declaration in parent.declarations]
+        declarations = []
         targets: Set[str] = set()
         kwargs.pop("targets", "dummy")
         statements = [
@@ -487,7 +489,7 @@ class DaCeIRBuilder(eve.NodeTranslator):
             if (is_control_flow and len(current_block) > 0) or last_statement:
                 # create a new tasklet
                 read_memlets = _get_tasklet_inout_memlets(
-                    parent,
+                    node,
                     get_outputs=False,
                     global_ctx=global_ctx,
                     grid_subset=iteration_ctx.grid_subset,
@@ -495,13 +497,16 @@ class DaCeIRBuilder(eve.NodeTranslator):
                 )
 
                 write_memlets = _get_tasklet_inout_memlets(
-                    parent,
+                    node,
                     get_outputs=True,
                     global_ctx=global_ctx,
                     grid_subset=iteration_ctx.grid_subset,
                     k_interval=k_interval,
                 )
 
+                # TODO
+                # Fix memlets here. They are based on the full stencil, not the current node.
+                # Issue: _get_tasklet_inout_memlets() was written for HorizontalExecution nodes :(
                 tasklet = dcir.Tasklet(
                     decls=declarations,
                     stmts=current_block,
@@ -521,7 +526,7 @@ class DaCeIRBuilder(eve.NodeTranslator):
             if is_control_flow:
                 dace_nodes.append(statement)
 
-        return dace_nodes
+        return self.to_dataflow(dace_nodes, global_ctx=global_ctx, symbol_collector=symbol_collector)
 
     def visit_HorizontalExecution(
         self,

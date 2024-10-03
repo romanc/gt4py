@@ -838,8 +838,8 @@ class IterationNode(eve.Node):
 
 class Condition(eve.Node):
     condition: Expr
-    true_state: List[Union[ComputationState, Condition, WhileLoop]]
-    false_state: List[Union[ComputationState, Condition, WhileLoop]] = eve.field(default_factory=list)
+    true_state: List[NestedSDFG]
+    false_state: List[NestedSDFG] = eve.field(default_factory=list)
 
 
 class Tasklet(ComputationNode, IterationNode, eve.SymbolTableTrait):
@@ -867,7 +867,7 @@ class DomainLoop(IterationNode, ComputationNode):
 
 class WhileLoop(eve.Node):
     condition: Expr
-    body: List[Union[ComputationState, Condition, WhileLoop]]
+    body: List[NestedSDFG]
 
 
 class NestedSDFG(ComputationNode, eve.SymbolTableTrait):
