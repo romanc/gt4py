@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from gt4py.cartesian.gtc.dace.nodes import StencilComputation
 
 
-def _access_iter(node: Union[oir.Expr, oir.Stmt], get_outputs: bool):
+def _access_iter(node: oir.HorizontalExecution, get_outputs: bool):
     if get_outputs:
         iterator = filter(
             lambda node: isinstance(node, oir.FieldAccess),
@@ -70,7 +70,7 @@ def _access_iter(node: Union[oir.Expr, oir.Stmt], get_outputs: bool):
 
 
 def _get_tasklet_inout_memlets(
-    node: Union[oir.Expr, oir.Stmt],
+    node: oir.HorizontalExecution,
     *,
     get_outputs: bool,
     global_ctx: "DaCeIRBuilder.GlobalContext",
@@ -486,10 +486,10 @@ class DaCeIRBuilder(eve.NodeTranslator):
                 current_block.append(statement)
             
             last_statement = index == len(statements) - 1
-            if (is_control_flow and len(current_block) > 0) or last_statement:
+            if (is_control_flow or last_statement) and len(current_block) > 0:
                 # create a new tasklet
                 read_memlets = _get_tasklet_inout_memlets(
-                    node,
+                    parent,
                     get_outputs=False,
                     global_ctx=global_ctx,
                     grid_subset=iteration_ctx.grid_subset,
@@ -497,7 +497,7 @@ class DaCeIRBuilder(eve.NodeTranslator):
                 )
 
                 write_memlets = _get_tasklet_inout_memlets(
-                    node,
+                    parent,
                     get_outputs=True,
                     global_ctx=global_ctx,
                     grid_subset=iteration_ctx.grid_subset,

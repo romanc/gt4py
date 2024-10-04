@@ -848,6 +848,11 @@ class Tasklet(ComputationNode, IterationNode, eve.SymbolTableTrait):
     grid_subset: GridSubset = GridSubset.single_gridpoint()
     extra_connectors_out: set[str] = eve.field(default_factory=set)
 
+    @datamodels.validator("stmts")
+    def non_empty_list(self, attribute: datamodels.Attribute, v: List[Stmt]) -> None:
+        if len(v) < 1:
+            raise ValueError("Tasklet must contain at least one statement.")
+
 
 class DomainMap(ComputationNode, IterationNode):
     index_ranges: List[Range]
