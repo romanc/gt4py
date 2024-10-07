@@ -448,15 +448,16 @@ class DaCeIRBuilder(eve.NodeTranslator):
         self,
         node: oir.CodeBlock,
         *,
-        parent: oir.HorizontalExecution,
         global_ctx: "DaCeIRBuilder.GlobalContext",
         iteration_ctx: "DaCeIRBuilder.IterationContext",
         symbol_collector: "DaCeIRBuilder.SymbolCollector",
+        memlets: List[dcir.Memlet] = [],
+        declarations: List[dcir.LocalScalarDecl] = [],
         k_interval,
         **kwargs: Any,
     ):
         # declarations = [self.visit(declaration, **kwargs) for declaration in parent.declarations]
-        declarations = []
+        # declarations = []
         targets: Set[str] = set()
         kwargs.pop("targets", "dummy")
         statements = [
@@ -467,7 +468,8 @@ class DaCeIRBuilder(eve.NodeTranslator):
                 symbol_collector=symbol_collector,
                 iteration_ctx=iteration_ctx,
                 k_interval=k_interval,
-                parent=parent,
+                memlets=memlets,
+                declarations=declarations,
                 **kwargs,
             )
             for statement in node.body
@@ -479,7 +481,7 @@ class DaCeIRBuilder(eve.NodeTranslator):
         # then, return new list with types that are either ComputationState, Condition, or WhileLoop
 
         dace_nodes = []
-        current_block = []
+        current_block: List[dcir.Stmt] = []
         for index, statement in enumerate(statements):
             is_control_flow = isinstance(statement, dcir.Condition) or isinstance(statement, dcir.WhileLoop)
             if not is_control_flow:
@@ -487,36 +489,40 @@ class DaCeIRBuilder(eve.NodeTranslator):
             
             last_statement = index == len(statements) - 1
             if (is_control_flow or last_statement) and len(current_block) > 0:
+                local_declarations = []
+                read_memlets: List[dcir.Memlet] = []
+                write_memlets: List[dcir.Memlet]= []
+
+                # Match node access in this code block with read/write memlets calculated on
+                # the full horizontal execution.
+                # NOTE We should clean this up in the future.
+                for block_statement in current_block:
+                    for access_node in block_statement.walk_values().if_isinstance(dcir.ScalarAccess, dcir.IndexAccess):
+                        symbol_name = access_node.name
+                        matches = [memlet for memlet in memlets if memlet.connector == symbol_name]
+
+                        if len(matches) > 1:
+                            raise RuntimeError("Found more than one matching memlet for symbol '%s'" % symbol_name)
+
+                        # Memlets aren't hashable, we thus can't use a set
+                        if len(matches) > 0 and matches[0].is_write and matches[0] not in write_memlets:
+                            write_memlets.append(*matches)
+                        if len(matches) > 0 and matches[0].is_read and matches[0] not in read_memlets:
+                            read_memlets.append(*matches)
+
                 # create a new tasklet
-                read_memlets = _get_tasklet_inout_memlets(
-                    parent,
-                    get_outputs=False,
-                    global_ctx=global_ctx,
-                    grid_subset=iteration_ctx.grid_subset,
-                    k_interval=k_interval,
-                )
-
-                write_memlets = _get_tasklet_inout_memlets(
-                    parent,
-                    get_outputs=True,
-                    global_ctx=global_ctx,
-                    grid_subset=iteration_ctx.grid_subset,
-                    k_interval=k_interval,
-                )
-
-                # TODO
-                # Fix memlets here. They are based on the full stencil, not the current node.
-                # Issue: _get_tasklet_inout_memlets() was written for HorizontalExecution nodes :(
                 tasklet = dcir.Tasklet(
-                    decls=declarations,
+                    decls=local_declarations,
                     stmts=current_block,
                     read_memlets=read_memlets,
                     write_memlets=write_memlets,
                 )
-
                 self._fix_memlet_array_access(
+                    # See notes inside the function
+                    # NOTE We should clean this up with the node_access matching above
                     [*read_memlets, *write_memlets], tasklet, global_ctx, symbol_collector
                 )
+
                 dace_nodes.append(*self.to_state(tasklet, grid_subset=iteration_ctx.grid_subset))
 
                 # reset block scope
@@ -555,15 +561,34 @@ class DaCeIRBuilder(eve.NodeTranslator):
         iteration_ctx = iteration_ctx.push_expansion_items(expansion_items)
         assert iteration_ctx.grid_subset == dcir.GridSubset.single_gridpoint()
 
+        read_memlets = _get_tasklet_inout_memlets(
+            node,
+            get_outputs=False,
+            global_ctx=global_ctx,
+            grid_subset=iteration_ctx.grid_subset,
+            k_interval=k_interval,
+        )
+
+        write_memlets = _get_tasklet_inout_memlets(
+            node,
+            get_outputs=True,
+            global_ctx=global_ctx,
+            grid_subset=iteration_ctx.grid_subset,
+            k_interval=k_interval,
+        )
+
+        local_scalar_declarations = [self.visit(declaration, **kwargs) for declaration in node.declarations]
+
         code_block = oir.CodeBlock(body=node.body, loc=node.loc)
 
         dcir_nodes = self.visit(
             code_block,
-            parent=node,
             global_ctx=global_ctx,
             iteration_ctx=iteration_ctx,
             symbol_collector=symbol_collector,
             k_interval=k_interval,
+            memlets=[*read_memlets, *write_memlets],
+            declarations=local_scalar_declarations
             **kwargs,
         )
 
