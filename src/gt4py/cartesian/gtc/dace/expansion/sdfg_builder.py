@@ -187,7 +187,7 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
             # tasklet = dcir.Tasklet(body = node.condition)
             # -> get connector name
             tmp_condition_name = f"tmp_conditional_{id(node)}"
-            self.sdfg.add_scalar(tmp_condition_name, dtype=dace.bool, transient=True)
+            # self.sdfg.add_scalar(tmp_condition_name, dtype=dace.bool, transient=True)
             return tmp_condition_name
 
     def visit_Memlet(
@@ -314,13 +314,53 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
             symtable=symtable,
         )
 
+        tasklet_inputs: Set[str] = set()
+        tasklet_outputs: Set[str] = set()
+
+        # TODO
+        # merge write_memlets with writes of local scalar declarations (as defined by node.decls)
+        for access_node in node.walk_values().if_isinstance(dcir.AssignStmt):
+            target_name = access_node.left.name
+            matches = [declaration for declaration in node.decls if declaration.name == target_name]
+
+            if len(matches) > 1:
+                raise RuntimeError("Found more than one matching declaration for '%s'" % target_name)
+            
+            if len(matches) > 0:
+                tasklet_outputs.add(target_name)
+                sdfg_ctx.sdfg.add_scalar(target_name, dtype=data_type_to_dace_typeclass(matches[0].dtype), transient=True)
+            
+
+        # merge read_memlets with reads of local scalars (unless written in the same tasklet)
+        for access_node in node.walk_values().if_isinstance(dcir.ScalarAccess):
+            read_name = access_node.name
+            locally_declared = len([declaration for declaration in node.decls if declaration.name == read_name]) > 0
+            field_access = len(set(memlet.connector for memlet in [*node.read_memlets, *node.write_memlets] if memlet.connector == read_name)) > 0
+
+            if not locally_declared and not field_access:
+                tasklet_inputs.add(read_name)
+
         tasklet = sdfg_ctx.state.add_tasklet(
             name=f"{sdfg_ctx.sdfg.label}_Tasklet",
             code=code,
-            inputs=set(memlet.connector for memlet in node.read_memlets),
-            outputs=node.extra_connectors_out.union(set(memlet.connector for memlet in node.write_memlets)),
+            inputs=tasklet_inputs.union(set(memlet.connector for memlet in node.read_memlets)),
+            outputs=tasklet_outputs.union(set(memlet.connector for memlet in node.write_memlets)),
             debuginfo=get_dace_debuginfo(node),
         )
+
+        # add memlets for local scalars into / out of tasklet
+        for output_name in tasklet_outputs:
+            access_node = sdfg_ctx.state.add_access(output_name)
+            write_memlet = dace.Memlet(output_name)
+            sdfg_ctx.state.add_memlet_path(
+                tasklet, access_node, src_conn=output_name, memlet=write_memlet
+            )
+        for input_name in tasklet_inputs:
+            access_node = sdfg_ctx.state.add_access(input_name)
+            read_memlet = dace.Memlet(input_name)
+            sdfg_ctx.state.add_memlet_path(
+                access_node, tasklet, dst_conn=input_name, memlet=read_memlet
+            )
 
         self.visit(
             node.read_memlets,
@@ -555,17 +595,14 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
             node_ctx: "StencilComputationSDFGBuilder.NodeContext",
             symtable: ChainMap[eve.SymbolRef, Any],
             **kwargs
-        ):
+        ) -> None:
         tmp_access = dcir.ScalarAccess(name=tmp_condition_name, dtype=common.DataType.BOOL)
         condition_tasklet = dcir.Tasklet(
-            decls = [],
-            stmts=[dcir.AssignStmt(left=tmp_access, right=node.condition)],
-            read_memlets=[], write_memlets=[], extra_connectors_out={tmp_condition_name}
+            decls = [dcir.LocalScalarDecl(name=tmp_access.name, dtype=tmp_access.dtype, loc=tmp_access.loc)],
+            stmts=[dcir.AssignStmt(left=tmp_access, right=node.condition, loc=tmp_access.loc)],
+            read_memlets=[], write_memlets=[]
         )
-        tasklet = self.visit(
+        self.visit(
             condition_tasklet, sdfg_ctx=sdfg_ctx, node_ctx=node_ctx,
-            symtable=symtable, **kwargs)
-        access_node = sdfg_ctx.state.add_access(tmp_condition_name)
-        sdfg_ctx.state.add_memlet_path(
-            tasklet, access_node, src_conn=tmp_condition_name, memlet=dace.Memlet(tmp_condition_name)
+            symtable=symtable, **kwargs
         )

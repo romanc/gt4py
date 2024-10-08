@@ -839,14 +839,23 @@ class IterationNode(eve.Node):
 class Condition(eve.Node):
     condition: Expr
     true_state: List[NestedSDFG]
+
+    # false_state is unused for now due to how conditions are
+    # parsed at the oir-level
+    # NOTE We should clean this up in the future
     false_state: List[NestedSDFG] = eve.field(default_factory=list)
+
+    # At the oir-level, we might pull the condition expression out
+    # into a separate variable. If we can, we "re-attach" this
+    # assignment to the condition.
+    # NOTE We should clean this up in the future
+    # condition_assignment: Optional[AssignStmt] = None
 
 
 class Tasklet(ComputationNode, IterationNode, eve.SymbolTableTrait):
     decls: List[LocalScalarDecl]
     stmts: List[Stmt]
     grid_subset: GridSubset = GridSubset.single_gridpoint()
-    extra_connectors_out: set[str] = eve.field(default_factory=set)
 
     @datamodels.validator("stmts")
     def non_empty_list(self, attribute: datamodels.Attribute, v: List[Stmt]) -> None:

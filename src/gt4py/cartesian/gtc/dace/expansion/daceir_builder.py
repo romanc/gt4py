@@ -493,10 +493,10 @@ class DaCeIRBuilder(eve.NodeTranslator):
                 read_memlets: List[dcir.Memlet] = []
                 write_memlets: List[dcir.Memlet]= []
 
-                # Match node access in this code block with read/write memlets calculated on
-                # the full horizontal execution.
-                # NOTE We should clean this up in the future.
                 for block_statement in current_block:
+                    # Match node access in this code block with read/write memlets calculated on
+                    # the full horizontal execution.
+                    # NOTE We should clean this up in the future.
                     for access_node in block_statement.walk_values().if_isinstance(dcir.ScalarAccess, dcir.IndexAccess):
                         symbol_name = access_node.name
                         matches = [memlet for memlet in memlets if memlet.connector == symbol_name]
@@ -509,6 +509,28 @@ class DaCeIRBuilder(eve.NodeTranslator):
                             write_memlets.append(*matches)
                         if len(matches) > 0 and matches[0].is_read and matches[0] not in read_memlets:
                             read_memlets.append(*matches)
+                    
+                    # Match the left side of assignment statements with local scalar declarations given
+                    # to the full horizontal execution.
+                    # NOTE We should clean this up in the future
+                    for assignment_statement in block_statement.walk_values().if_isinstance(dcir.AssignStmt):
+                        target_name = assignment_statement.left.name
+                        matches = [declaration for declaration in declarations if declaration.name == target_name]
+
+                        if len(matches) > 1:
+                            # yell if there's more than one match (there shouldn't be)
+                            raise RuntimeError("Found more than one matching local scalar declaration for target '%s'" % target_name)
+                        
+                        if len(matches) > 0:
+                            # remove from declarations and put into local_declarations
+                            local_declarations.append(matches[0])
+                            declarations.remove(matches[0])
+                            
+                            # Context:
+                            # We use this information in sdfg_builder: Whatever is on the left side of an
+                            # assignment statement is either a local scalar declarations (and thus
+                            # "exported" through a write access node) or something we need to read from
+                            # a read access node and pass into the tasklet.
 
                 # create a new tasklet
                 tasklet = dcir.Tasklet(
@@ -588,7 +610,7 @@ class DaCeIRBuilder(eve.NodeTranslator):
             symbol_collector=symbol_collector,
             k_interval=k_interval,
             memlets=[*read_memlets, *write_memlets],
-            declarations=local_scalar_declarations
+            declarations=local_scalar_declarations,
             **kwargs,
         )
 
