@@ -729,8 +729,8 @@ class DaCeIRBuilder(eve.NodeTranslator):
             return nodes
         elif all(isinstance(n, (dcir.NestedSDFG, dcir.DomainMap, dcir.Tasklet)) for n in nodes):
             return [dcir.ComputationState(computations=nodes, grid_subset=grid_subset)]
-        else:
-            raise ValueError("Can't mix dataflow and state nodes on same level.")
+
+        raise ValueError("Can't mix dataflow and state nodes on same level.")
 
     def _process_map_item(
         self,
