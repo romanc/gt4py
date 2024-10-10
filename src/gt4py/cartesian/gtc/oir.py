@@ -32,7 +32,7 @@ class Stmt(common.Stmt):
 
 
 class CodeBlock(common.BlockStmt[Stmt], Stmt):
-    pass
+    label: str
 
 
 class Literal(common.Literal, Expr):  # type: ignore

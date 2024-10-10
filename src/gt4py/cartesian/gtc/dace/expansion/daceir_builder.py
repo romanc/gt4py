@@ -180,11 +180,11 @@ class DaCeIRBuilder(eve.NodeTranslator):
             oir_decl: oir.Decl = self.library_node.declarations[field]
             assert isinstance(oir_decl, oir.FieldDecl)
             dace_array = self.arrays[field]
-            for s in dace_array.strides:
-                for sym in dace.symbolic.symlist(s).values():
-                    symbol_collector.add_symbol(str(sym))
-            for sym in access_info.grid_subset.free_symbols:
-                symbol_collector.add_symbol(sym)
+            for stride in dace_array.strides:
+                for symbol in dace.symbolic.symlist(stride).values():
+                    symbol_collector.add_symbol(str(symbol))
+            for symbol in access_info.grid_subset.free_symbols:
+                symbol_collector.add_symbol(symbol)
 
             return dcir.FieldDecl(
                 name=field,
@@ -372,7 +372,7 @@ class DaCeIRBuilder(eve.NodeTranslator):
         return dcir.AssignStmt(left=left, right=right)
 
     def visit_MaskStmt(self, node: oir.MaskStmt, **kwargs: Any) -> dcir.MaskStmt:
-        code_block = oir.CodeBlock(body=node.body, loc=node.loc)
+        code_block = oir.CodeBlock(body=node.body, loc=node.loc, label=f"condition_{id(node)}")
         body = self.visit(code_block, **kwargs)
         return dcir.Condition(
             condition=self.visit(node.mask, is_target=False, **kwargs),
@@ -380,7 +380,7 @@ class DaCeIRBuilder(eve.NodeTranslator):
         )
 
     def visit_While(self, node: oir.While, **kwargs: Any) -> dcir.While:
-        code_block = oir.CodeBlock(body=node.body, loc=node.loc)
+        code_block = oir.CodeBlock(body=node.body, loc=node.loc, label=f"while_{id(node)}")
         body = self.visit(code_block, **kwargs)
         return dcir.WhileLoop(
             condition=self.visit(node.cond, is_target=False, **kwargs),
@@ -506,9 +506,9 @@ class DaCeIRBuilder(eve.NodeTranslator):
 
                         # Memlets aren't hashable, we thus can't use a set
                         if len(matches) > 0 and matches[0].is_write and matches[0] not in write_memlets:
-                            write_memlets.append(*matches)
+                            write_memlets.append(matches[0].copy(update={}))
                         if len(matches) > 0 and matches[0].is_read and matches[0] not in read_memlets:
-                            read_memlets.append(*matches)
+                            read_memlets.append(matches[0].copy(update={}))
                     
                     # Match the left side of assignment statements with local scalar declarations given
                     # to the full horizontal execution.
@@ -554,7 +554,12 @@ class DaCeIRBuilder(eve.NodeTranslator):
             if is_control_flow:
                 dace_nodes.append(statement)
 
-        return self.to_dataflow(dace_nodes, global_ctx=global_ctx, symbol_collector=symbol_collector)
+        return self.to_dataflow(
+            dace_nodes,
+            global_ctx=global_ctx,
+            symbol_collector=symbol_collector,
+            label=node.label,
+        )
 
     def visit_HorizontalExecution(
         self,
@@ -601,7 +606,7 @@ class DaCeIRBuilder(eve.NodeTranslator):
 
         local_scalar_declarations = [self.visit(declaration, **kwargs) for declaration in node.declarations]
 
-        code_block = oir.CodeBlock(body=node.body, loc=node.loc)
+        code_block = oir.CodeBlock(body=node.body, loc=node.loc, label=f"he_{id(node)}")
 
         dcir_nodes = self.visit(
             code_block,
@@ -687,6 +692,7 @@ class DaCeIRBuilder(eve.NodeTranslator):
         self,
         nodes,
         *,
+        label: str,
         global_ctx: "DaCeIRBuilder.GlobalContext",
         symbol_collector: "DaCeIRBuilder.SymbolCollector",
     ):
@@ -712,7 +718,7 @@ class DaCeIRBuilder(eve.NodeTranslator):
         ]
         return [
             dcir.NestedSDFG(
-                label=global_ctx.library_node.label,
+                label=label,
                 field_decls=field_decls,
                 # NestedSDFG must have same shape on input and output, matching corresponding
                 # nsdfg.sdfg's array shape
@@ -745,7 +751,8 @@ class DaCeIRBuilder(eve.NodeTranslator):
         grid_subset = iteration_ctx.grid_subset
         read_memlets, write_memlets, _ = union_inout_memlets(list(scope_nodes))
         scope_nodes = self.to_dataflow(
-            scope_nodes, global_ctx=global_ctx, symbol_collector=symbol_collector
+            scope_nodes, global_ctx=global_ctx, symbol_collector=symbol_collector,
+            label=f"map_{id(item)}",
         )
 
         ranges = []
