@@ -351,9 +351,11 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
             field_access = (
                 len(
                     set(
-                        memlet.connector
-                        for memlet in [*node.read_memlets, *node.write_memlets]
-                        if memlet.connector == read_name
+                        [
+                            memlet.connector
+                            for memlet in [*node.read_memlets, *node.write_memlets]
+                            if memlet.connector == read_name
+                        ]
                     )
                 )
                 > 0
@@ -362,24 +364,27 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
             if not locally_declared and not field_access:
                 tasklet_inputs.add(read_name)
 
+        inputs = set(memlet.connector for memlet in node.read_memlets).union(tasklet_inputs)
+        outputs = set(memlet.connector for memlet in node.write_memlets).union(tasklet_outputs)
+
         tasklet = sdfg_ctx.state.add_tasklet(
             name=f"{sdfg_ctx.sdfg.label}_Tasklet",
             code=code,
-            inputs=tasklet_inputs.union(set(memlet.connector for memlet in node.read_memlets)),
-            outputs=tasklet_outputs.union(set(memlet.connector for memlet in node.write_memlets)),
+            inputs=inputs,
+            outputs=outputs,
             debuginfo=get_dace_debuginfo(node),
         )
 
         # add memlets for local scalars into / out of tasklet
         for output_name in tasklet_outputs:
             access_node = sdfg_ctx.state.add_access(output_name)
-            write_memlet = dace.Memlet(output_name)
+            write_memlet = dace.Memlet(data=output_name)
             sdfg_ctx.state.add_memlet_path(
                 tasklet, access_node, src_conn=output_name, memlet=write_memlet
             )
         for input_name in tasklet_inputs:
             access_node = sdfg_ctx.state.add_access(input_name)
-            read_memlet = dace.Memlet(input_name)
+            read_memlet = dace.Memlet(data=input_name)
             sdfg_ctx.state.add_memlet_path(
                 access_node, tasklet, dst_conn=input_name, memlet=read_memlet
             )
