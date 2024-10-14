@@ -85,7 +85,7 @@ def _get_tasklet_inout_memlets(
         **kwargs,
     )
 
-    res = list()
+    memlets = list()
     for name, offset, tasklet_symbol in _access_iter(node, get_outputs=get_outputs):
         access_info = access_infos[name]
         if not access_info.variable_offset_axes:
@@ -95,15 +95,16 @@ def _get_tasklet_inout_memlets(
                     axis, extent=(offset_dict[axis.lower()], offset_dict[axis.lower()])
                 )
 
-        memlet = dcir.Memlet(
-            field=name,
-            connector=tasklet_symbol,
-            access_info=access_info,
-            is_read=not get_outputs,
-            is_write=get_outputs,
+        memlets.append(
+            dcir.Memlet(
+                field=name,
+                connector=tasklet_symbol,
+                access_info=access_info,
+                is_read=not get_outputs,
+                is_write=get_outputs,
+            )
         )
-        res.append(memlet)
-    return res
+    return memlets
 
 
 def _all_stmts_same_region(scope_nodes, axis: dcir.Axis, interval):
@@ -179,11 +180,11 @@ class DaCeIRBuilder(eve.NodeTranslator):
             oir_decl: oir.Decl = self.library_node.declarations[field]
             assert isinstance(oir_decl, oir.FieldDecl)
             dace_array = self.arrays[field]
-            for s in dace_array.strides:
-                for sym in dace.symbolic.symlist(s).values():
-                    symbol_collector.add_symbol(str(sym))
-            for sym in access_info.grid_subset.free_symbols:
-                symbol_collector.add_symbol(sym)
+            for stride in dace_array.strides:
+                for symbol in dace.symbolic.symlist(stride).values():
+                    symbol_collector.add_symbol(str(symbol))
+            for symbol in access_info.grid_subset.free_symbols:
+                symbol_collector.add_symbol(symbol)
 
             return dcir.FieldDecl(
                 name=field,
@@ -617,8 +618,8 @@ class DaCeIRBuilder(eve.NodeTranslator):
             return nodes
         elif all(isinstance(n, (dcir.NestedSDFG, dcir.DomainMap, dcir.Tasklet)) for n in nodes):
             return [dcir.ComputationState(computations=nodes, grid_subset=grid_subset)]
-        else:
-            raise ValueError("Can't mix dataflow and state nodes on same level.")
+
+        raise ValueError("Can't mix dataflow and state nodes on same level.")
 
     def _process_map_item(
         self,
