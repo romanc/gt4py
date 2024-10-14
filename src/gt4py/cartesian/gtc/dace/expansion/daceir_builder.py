@@ -415,8 +415,8 @@ class DaCeIRBuilder(eve.NodeTranslator):
         self,
         memlets: List[dcir.Memlet],
         tasklet: dcir.Tasklet,
-        global_ctx: "DaCeIRBuilder.GlobalContext",
-        symbol_collector: "DaCeIRBuilder.SymbolCollector",
+        global_ctx: DaCeIRBuilder.GlobalContext,
+        symbol_collector: DaCeIRBuilder.SymbolCollector,
     ) -> None:
         """
         This function handles the special case of a tasklet performing array access.

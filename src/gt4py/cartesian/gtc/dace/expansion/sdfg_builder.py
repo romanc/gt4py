@@ -243,8 +243,8 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         self,
         node: dcir.WhileLoop,
         *,
-        sdfg_ctx: "StencilComputationSDFGBuilder.SDFGContext",
-        node_ctx: "StencilComputationSDFGBuilder.NodeContext",
+        sdfg_ctx: StencilComputationSDFGBuilder.SDFGContext,
+        node_ctx: StencilComputationSDFGBuilder.NodeContext,
         symtable: ChainMap[eve.SymbolRef, dcir.Decl],
         **kwargs: Any,
     ) -> None:
@@ -276,8 +276,8 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         self,
         node: dcir.Condition,
         *,
-        sdfg_ctx: "StencilComputationSDFGBuilder.SDFGContext",
-        node_ctx: "StencilComputationSDFGBuilder.NodeContext",
+        sdfg_ctx: StencilComputationSDFGBuilder.SDFGContext,
+        node_ctx: StencilComputationSDFGBuilder.NodeContext,
         symtable: ChainMap[eve.SymbolRef, dcir.Decl],
         **kwargs: Any,
     ) -> None:
@@ -623,8 +623,8 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         tmp_condition_name: str,
         node: Union[dcir.Condition, dcir.WhileLoop],
         *,
-        sdfg_ctx: "StencilComputationSDFGBuilder.SDFGContext",
-        node_ctx: "StencilComputationSDFGBuilder.NodeContext",
+        sdfg_ctx: StencilComputationSDFGBuilder.SDFGContext,
+        node_ctx: StencilComputationSDFGBuilder.NodeContext,
         symtable: ChainMap[eve.SymbolRef, Any],
         **kwargs,
     ) -> None:
