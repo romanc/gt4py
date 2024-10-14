@@ -281,11 +281,6 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         symtable: ChainMap[eve.SymbolRef, dcir.Decl],
         **kwargs: Any,
     ) -> None:
-        # NOTE (to myself)
-        # for conditionals, we can can hide the whole complexity in `add_condition()` because
-        # the condition is evaluated only once and the `else` branch just uses the negated version
-        # of the `if` branch. Not as complicated as with `while` loops.
-        # Nevertheless, in a subsequent version, we should clean this up.
         tmp_condition_name = f"tmp_conditional_{id(node)}"
         sdfg_ctx.add_condition(tmp_condition_name)
         assert sdfg_ctx.state.label.startswith("condition_init")
@@ -318,7 +313,7 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         node_ctx: StencilComputationSDFGBuilder.NodeContext,
         symtable: ChainMap[eve.SymbolRef, dcir.Decl],
         **kwargs,
-    ):
+    ) -> None:
         code = TaskletCodegen.apply_codegen(
             node,
             read_memlets=node.read_memlets,
@@ -330,7 +325,6 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         tasklet_inputs: Set[str] = set()
         tasklet_outputs: Set[str] = set()
 
-        # TODO
         # merge write_memlets with writes of local scalar declarations (as defined by node.decls)
         for access_node in node.walk_values().if_isinstance(dcir.AssignStmt):
             target_name = access_node.left.name
@@ -409,8 +403,6 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         StencilComputationSDFGBuilder._add_empty_edges(
             tasklet, tasklet, sdfg_ctx=sdfg_ctx, node_ctx=node_ctx
         )
-
-        return tasklet
 
     def visit_Range(self, node: dcir.Range, **kwargs) -> Dict[str, str]:
         start, end = node.interval.to_dace_symbolic()
