@@ -328,6 +328,24 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         # merge write_memlets with writes of local scalar declarations (as defined by node.decls)
         for access_node in node.walk_values().if_isinstance(dcir.AssignStmt):
             target_name = access_node.left.name
+
+            field_access = (
+                len(
+                    set([
+                        memlet.connector for memlet in [*node.write_memlets] if memlet.connector == target_name
+                    ])
+                )
+                > 0
+            )
+            defined_symbol = False
+            for symbol_map in symtable.maps:
+                for symbol in symbol_map.keys():
+                    if symbol == target_name:
+                        defined_symbol = True
+
+            if field_access or defined_symbol:
+                continue
+
             matches = [declaration for declaration in node.decls if declaration.name == target_name]
 
             if len(matches) > 1:
@@ -360,8 +378,13 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
                 )
                 > 0
             )
+            defined_symbol = False
+            for symbol_map in symtable.maps:
+                for symbol in symbol_map.keys():
+                    if symbol == read_name:
+                        defined_symbol = True
 
-            if not locally_declared and not field_access:
+            if not locally_declared and not field_access and not defined_symbol:
                 tasklet_inputs.add(read_name)
 
         inputs = set(memlet.connector for memlet in node.read_memlets).union(tasklet_inputs)
