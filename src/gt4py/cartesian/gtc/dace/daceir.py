@@ -845,12 +845,6 @@ class Condition(eve.Node):
     # NOTE We should clean this up in the future
     false_state: List[NestedSDFG] = eve.field(default_factory=list)
 
-    # At the oir-level, we might pull the condition expression out
-    # into a separate variable. If we can, we "re-attach" this
-    # assignment to the condition.
-    # NOTE We should clean this up in the future
-    # condition_assignment: Optional[AssignStmt] = None
-
 
 class Tasklet(ComputationNode, IterationNode, eve.SymbolTableTrait):
     decls: List[LocalScalarDecl]

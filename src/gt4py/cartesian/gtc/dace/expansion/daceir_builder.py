@@ -383,21 +383,17 @@ class DaCeIRBuilder(eve.NodeTranslator):
         left = self.visit(node.left, is_target=True, targets=targets, **kwargs)
         return dcir.AssignStmt(left=left, right=right)
 
-    def visit_MaskStmt(self, node: oir.MaskStmt, **kwargs: Any) -> dcir.MaskStmt:
+    def visit_MaskStmt(self, node: oir.MaskStmt, **kwargs: Any) -> dcir.Condition:
         code_block = oir.CodeBlock(body=node.body, loc=node.loc, label=f"condition_{id(node)}")
         body = self.visit(code_block, **kwargs)
         return dcir.Condition(
-            condition=self.visit(node.mask, is_target=False, **kwargs),
-            true_state=body
+            condition=self.visit(node.mask, is_target=False, **kwargs), true_state=body
         )
 
-    def visit_While(self, node: oir.While, **kwargs: Any) -> dcir.While:
+    def visit_While(self, node: oir.While, **kwargs: Any) -> dcir.WhileLoop:
         code_block = oir.CodeBlock(body=node.body, loc=node.loc, label=f"while_{id(node)}")
         body = self.visit(code_block, **kwargs)
-        return dcir.WhileLoop(
-            condition=self.visit(node.cond, is_target=False, **kwargs),
-            body=body
-        )
+        return dcir.WhileLoop(condition=self.visit(node.cond, is_target=False, **kwargs), body=body)
 
     def visit_Cast(self, node: oir.Cast, **kwargs: Any) -> dcir.Cast:
         return dcir.Cast(dtype=node.dtype, expr=self.visit(node.expr, **kwargs))
@@ -460,16 +456,16 @@ class DaCeIRBuilder(eve.NodeTranslator):
         self,
         node: oir.CodeBlock,
         *,
-        global_ctx: "DaCeIRBuilder.GlobalContext",
-        iteration_ctx: "DaCeIRBuilder.IterationContext",
-        symbol_collector: "DaCeIRBuilder.SymbolCollector",
-        memlets: List[dcir.Memlet] = [],
-        declarations: List[dcir.LocalScalarDecl] = [],
+        global_ctx: DaCeIRBuilder.GlobalContext,
+        iteration_ctx: DaCeIRBuilder.IterationContext,
+        symbol_collector: DaCeIRBuilder.SymbolCollector,
+        memlets: Optional[List[dcir.Memlet]] = None,
+        declarations: Optional[List[dcir.LocalScalarDecl]] = None,
         k_interval,
         **kwargs: Any,
     ):
-        # declarations = [self.visit(declaration, **kwargs) for declaration in parent.declarations]
-        # declarations = []
+        memlets = [] if memlets is None else memlets
+        declarations = [] if declarations is None else declarations
         targets: Set[str] = set()
         kwargs.pop("targets", "dummy")
         statements = [
@@ -492,52 +488,77 @@ class DaCeIRBuilder(eve.NodeTranslator):
         # and call "to_state" on it
         # then, return new list with types that are either ComputationState, Condition, or WhileLoop
 
-        dace_nodes = []
+        dace_nodes: List[Union[dcir.ComputationState, dcir.Condition, dcir.WhileLoop]] = []
         current_block: List[dcir.Stmt] = []
         for index, statement in enumerate(statements):
-            is_control_flow = isinstance(statement, dcir.Condition) or isinstance(statement, dcir.WhileLoop)
+            is_control_flow = isinstance(statement, dcir.Condition) or isinstance(
+                statement, dcir.WhileLoop
+            )
             if not is_control_flow:
                 current_block.append(statement)
-            
+
             last_statement = index == len(statements) - 1
             if (is_control_flow or last_statement) and len(current_block) > 0:
                 local_declarations = []
                 read_memlets: List[dcir.Memlet] = []
-                write_memlets: List[dcir.Memlet]= []
+                write_memlets: List[dcir.Memlet] = []
 
                 for block_statement in current_block:
                     # Match node access in this code block with read/write memlets calculated on
                     # the full horizontal execution.
                     # NOTE We should clean this up in the future.
-                    for access_node in block_statement.walk_values().if_isinstance(dcir.ScalarAccess, dcir.IndexAccess):
+                    for access_node in block_statement.walk_values().if_isinstance(
+                        dcir.ScalarAccess, dcir.IndexAccess
+                    ):
                         symbol_name = access_node.name
-                        matches = [memlet for memlet in memlets if memlet.connector == symbol_name]
+                        matches: List[dcir.Memlet] = [
+                            memlet for memlet in memlets if memlet.connector == symbol_name
+                        ]
 
                         if len(matches) > 1:
-                            raise RuntimeError("Found more than one matching memlet for symbol '%s'" % symbol_name)
+                            raise RuntimeError(
+                                "Found more than one matching memlet for symbol '%s'" % symbol_name
+                            )
 
                         # Memlets aren't hashable, we thus can't use a set
-                        if len(matches) > 0 and matches[0].is_write and matches[0] not in write_memlets:
+                        if (
+                            len(matches) > 0
+                            and matches[0].is_write
+                            and matches[0] not in write_memlets
+                        ):
                             write_memlets.append(matches[0].copy(update={}))
-                        if len(matches) > 0 and matches[0].is_read and matches[0] not in read_memlets:
+                        if (
+                            len(matches) > 0
+                            and matches[0].is_read
+                            and matches[0] not in read_memlets
+                        ):
                             read_memlets.append(matches[0].copy(update={}))
-                    
+
                     # Match the left side of assignment statements with local scalar declarations given
                     # to the full horizontal execution.
                     # NOTE We should clean this up in the future
-                    for assignment_statement in block_statement.walk_values().if_isinstance(dcir.AssignStmt):
+                    for assignment_statement in block_statement.walk_values().if_isinstance(
+                        dcir.AssignStmt
+                    ):
                         target_name = assignment_statement.left.name
-                        matches = [declaration for declaration in declarations if declaration.name == target_name]
+                        decl_matches: List[dcir.LocalScalarDecl] = [
+                            declaration
+                            for declaration in declarations
+                            if declaration.name == target_name
+                        ]
 
-                        if len(matches) > 1:
+                        if len(decl_matches) > 1:
                             # yell if there's more than one match (there shouldn't be)
-                            raise RuntimeError("Found more than one matching local scalar declaration for target '%s'" % target_name)
-                        
-                        if len(matches) > 0:
+                            raise RuntimeError(
+                                "Found more than one matching local scalar declaration for target '%s'"
+                                % target_name
+                            )
+
+                        if len(decl_matches) > 0:
                             # remove from declarations and put into local_declarations
-                            local_declarations.append(matches[0])
-                            declarations.remove(matches[0])
-                            
+                            local_declarations.append(decl_matches[0])
+                            declarations.remove(decl_matches[0])
+
                             # Context:
                             # We use this information in sdfg_builder: Whatever is on the left side of an
                             # assignment statement is either a local scalar declarations (and thus
@@ -554,7 +575,10 @@ class DaCeIRBuilder(eve.NodeTranslator):
                 self._fix_memlet_array_access(
                     # See notes inside the function
                     # NOTE We should clean this up with the node_access matching above
-                    [*read_memlets, *write_memlets], tasklet, global_ctx, symbol_collector
+                    [*read_memlets, *write_memlets],
+                    tasklet,
+                    global_ctx,
+                    symbol_collector,
                 )
 
                 dace_nodes.append(*self.to_state(tasklet, grid_subset=iteration_ctx.grid_subset))
@@ -616,7 +640,9 @@ class DaCeIRBuilder(eve.NodeTranslator):
             k_interval=k_interval,
         )
 
-        local_scalar_declarations = [self.visit(declaration, **kwargs) for declaration in node.declarations]
+        local_scalar_declarations = [
+            self.visit(declaration, **kwargs) for declaration in node.declarations
+        ]
 
         code_block = oir.CodeBlock(body=node.body, loc=node.loc, label=f"he_{id(node)}")
 
@@ -711,7 +737,10 @@ class DaCeIRBuilder(eve.NodeTranslator):
         nodes = flatten_list(nodes)
         if all(isinstance(n, (dcir.NestedSDFG, dcir.DomainMap, dcir.Tasklet)) for n in nodes):
             return nodes
-        elif not all(isinstance(n, (dcir.ComputationState, dcir.Condition, dcir.DomainLoop, dcir.WhileLoop)) for n in nodes):
+        elif not all(
+            isinstance(n, (dcir.ComputationState, dcir.Condition, dcir.DomainLoop, dcir.WhileLoop))
+            for n in nodes
+        ):
             raise ValueError("Can't mix dataflow and state nodes on same level.")
 
         read_memlets, write_memlets, field_memlets = union_inout_memlets(nodes)
@@ -743,7 +772,10 @@ class DaCeIRBuilder(eve.NodeTranslator):
 
     def to_state(self, nodes, *, grid_subset: dcir.GridSubset):
         nodes = flatten_list(nodes)
-        if all(isinstance(n, (dcir.ComputationState, dcir.Condition, dcir.DomainLoop, dcir.WhileLoop)) for n in nodes):
+        if all(
+            isinstance(n, (dcir.ComputationState, dcir.Condition, dcir.DomainLoop, dcir.WhileLoop))
+            for n in nodes
+        ):
             return nodes
         elif all(isinstance(n, (dcir.NestedSDFG, dcir.DomainMap, dcir.Tasklet)) for n in nodes):
             return [dcir.ComputationState(computations=nodes, grid_subset=grid_subset)]
@@ -763,7 +795,9 @@ class DaCeIRBuilder(eve.NodeTranslator):
         grid_subset = iteration_ctx.grid_subset
         read_memlets, write_memlets, _ = union_inout_memlets(list(scope_nodes))
         scope_nodes = self.to_dataflow(
-            scope_nodes, global_ctx=global_ctx, symbol_collector=symbol_collector,
+            scope_nodes,
+            global_ctx=global_ctx,
+            symbol_collector=symbol_collector,
             label=f"map_{id(item)}",
         )
 

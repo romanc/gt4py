@@ -337,6 +337,7 @@ def compute_dcir_access_infos(
 
     return ctx.access_infos
 
+
 def make_dace_subset(
     context_info: dcir.FieldAccessInfo,
     access_info: dcir.FieldAccessInfo,
