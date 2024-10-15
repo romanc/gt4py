@@ -337,13 +337,8 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
                 )
                 > 0
             )
-            defined_symbol = False
-            for symbol_map in symtable.maps:
-                for symbol in symbol_map.keys():
-                    if symbol == target_name:
-                        defined_symbol = True
 
-            if field_access or defined_symbol:
+            if field_access:
                 continue
 
             matches = [declaration for declaration in node.decls if declaration.name == target_name]
