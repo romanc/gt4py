@@ -745,16 +745,6 @@ class AssignStmt(common.AssignStmt[Union[ScalarAccess, IndexAccess], Expr], Stmt
     _dtype_validation = common.assign_stmt_dtype_validation(strict=True)
 
 
-class MaskStmt(Stmt):
-    mask: Expr
-    body: List[Stmt]
-
-    @datamodels.validator("mask")
-    def mask_is_boolean_field_expr(self, attribute: datamodels.Attribute, v: Expr) -> None:
-        if v.dtype != common.DataType.BOOL:
-            raise ValueError("Mask must be a boolean expression.")
-
-
 class HorizontalRestriction(common.HorizontalRestriction[Stmt], Stmt):
     pass
 
@@ -777,10 +767,6 @@ class Cast(common.Cast[Expr], Expr):  # type: ignore
 
 class NativeFuncCall(common.NativeFuncCall[Expr], Expr):
     _dtype_propagation = common.native_func_call_dtype_propagation(strict=True)
-
-
-class While(common.While[Stmt, Expr], Stmt):
-    pass
 
 
 class ScalarDecl(Decl):
@@ -845,6 +831,11 @@ class Condition(eve.Node):
     # NOTE We should clean this up in the future
     false_state: List[NestedSDFG] = eve.field(default_factory=list)
 
+    @datamodels.validator("condition")
+    def condition_is_boolean_expression(self, attribute: datamodels.Attribute, v: Expr) -> None:
+        if v.dtype != common.DataType.BOOL:
+            raise ValueError("Condition must be a boolean expression.")
+
 
 class Tasklet(ComputationNode, IterationNode, eve.SymbolTableTrait):
     decls: List[LocalScalarDecl]
@@ -876,6 +867,11 @@ class DomainLoop(IterationNode, ComputationNode):
 class WhileLoop(eve.Node):
     condition: Expr
     body: List[NestedSDFG]
+
+    @datamodels.validator("condition")
+    def condition_is_boolean_expression(self, attribute: datamodels.Attribute, v: Expr) -> None:
+        if v.dtype != common.DataType.BOOL:
+            raise ValueError("Condition must be a boolean expression.")
 
 
 class NestedSDFG(ComputationNode, eve.SymbolTableTrait):
