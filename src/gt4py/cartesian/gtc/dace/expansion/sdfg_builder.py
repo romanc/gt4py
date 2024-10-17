@@ -106,6 +106,11 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         # Cleanup: we might not need this state on the stack anymore
         sdfg_ctx.pop_while_guard()
         assert sdfg_ctx.state.label.startswith("while_guard")
+        # update edge (from while_init to while_guard) here, now that we know
+        # what to put in the assignment dict
+        # edges = sdfg_ctx.sdfg.edges_between("while_init", "while_guard")
+        # assert len(edges) == 1
+        # edges[0].data.assignments.update({"loop_condition": "condition_name_as_exported_from_the_tasklet"})
 
         sdfg_ctx.pop_while_loop()
         assert sdfg_ctx.state.label.startswith("while_loop")
@@ -135,6 +140,11 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
             symtable=symtable,
             **kwargs,
         )
+
+        # pop "condition_guard" here
+
+        # fetch the edge
+        # update the assignments on the edge with the condition as exported from the tasklet
 
         sdfg_ctx.pop_condition_true()
         assert sdfg_ctx.state.label.startswith("condition_true")
@@ -169,6 +179,16 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         scalar_mapping = {} if scalar_mapping is None else scalar_mapping
         tasklet_inputs: Set[str] = set()
         tasklet_outputs: Set[str] = set()
+
+        # general idea:
+        # either
+        #  - use `tasklet_outputs` below and write into node_ctx
+        #  - keep names from LocalScalarDecl inside tasklet (we can't control these in general)
+        #  - when feeding back into another tasklet, use the same connector name and keep the internal name again (as in code)
+        #  - get rid of `scalar_mapping` again (and fix condition/while loops as outlined there)
+        # or
+        #  - check if (and if so how) we could leverage `symtable`
+        #  - we'd need to "convert" locals to symbols defined in that mapping
 
         # merge write_memlets with writes of local scalar declarations (as defined by node.decls)
         for access_node in node.walk_values().if_isinstance(dcir.AssignStmt):

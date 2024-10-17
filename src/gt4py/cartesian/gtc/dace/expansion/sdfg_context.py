@@ -81,6 +81,7 @@ class SDFGContext:
         self.sdfg.add_edge(
             init_state,
             condition_state,
+            # TODO clear this dict
             dace.InterstateEdge(assignments=dict(if_condition=tmp_condition_name)),
         )
 
@@ -99,6 +100,7 @@ class SDFGContext:
         self.state_stack.append(merge_state)
         self.state_stack.append(false_state)
         self.state_stack.append(true_state)
+        # push "condition_guard" state
         self.state = init_state
         return self
 
@@ -129,6 +131,7 @@ class SDFGContext:
         self.sdfg.add_edge(
             init_state,
             guard_state,
+            # TODO: clear this dict
             dace.InterstateEdge(assignments=dict(loop_condition=tmp_condition_name)),
         )
 
