@@ -155,6 +155,7 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         sdfg_ctx: SDFGContext,
         node_ctx: StencilComputationSDFGBuilder.NodeContext,
         symtable: ChainMap[eve.SymbolRef, dcir.Decl],
+        scalar_mapping: Optional[Dict[str, str]] = None,
         **kwargs,
     ) -> None:
         code = TaskletCodegen.apply_codegen(
@@ -165,6 +166,7 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
             symtable=symtable,
         )
 
+        scalar_mapping = {} if scalar_mapping is None else scalar_mapping
         tasklet_inputs: Set[str] = set()
         tasklet_outputs: Set[str] = set()
 
@@ -198,7 +200,7 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
             if len(matches) > 0:
                 tasklet_outputs.add(target_name)
                 sdfg_ctx.sdfg.add_scalar(
-                    target_name, dtype=data_type_to_dace_typeclass(matches[0].dtype), transient=True
+                    scalar_mapping[target_name], dtype=data_type_to_dace_typeclass(matches[0].dtype), transient=True
                 )
 
         # merge read_memlets with reads of local scalars (unless written in the same tasklet)
@@ -241,11 +243,12 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         )
 
         # add memlets for local scalars into / out of tasklet
-        for output_name in tasklet_outputs:
+        for connector in tasklet_outputs:
+            output_name = scalar_mapping[connector]
             access_node = sdfg_ctx.state.add_access(output_name)
             write_memlet = dace.Memlet(data=output_name)
             sdfg_ctx.state.add_memlet_path(
-                tasklet, access_node, src_conn=output_name, memlet=write_memlet
+                tasklet, access_node, src_conn=connector, memlet=write_memlet
             )
         for input_name in tasklet_inputs:
             access_node = sdfg_ctx.state.add_access(input_name)
@@ -512,11 +515,12 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         symtable: ChainMap[eve.SymbolRef, Any],
         **kwargs,
     ) -> None:
-        tmp_access = dcir.ScalarAccess(name=tmp_condition_name, dtype=common.DataType.BOOL)
+        local_name = "condition_expression"
+        tmp_access = dcir.ScalarAccess(name=local_name, dtype=common.DataType.BOOL)
         condition_tasklet = dcir.Tasklet(
             decls=[
                 dcir.LocalScalarDecl(
-                    name=tmp_access.name, dtype=tmp_access.dtype, loc=tmp_access.loc
+                    name=local_name, dtype=tmp_access.dtype, loc=tmp_access.loc
                 )
             ],
             stmts=[dcir.AssignStmt(left=tmp_access, right=node.condition, loc=tmp_access.loc)],
@@ -524,5 +528,6 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
             write_memlets=[],
         )
         self.visit(
-            condition_tasklet, sdfg_ctx=sdfg_ctx, node_ctx=node_ctx, symtable=symtable, **kwargs
+            condition_tasklet, sdfg_ctx=sdfg_ctx, node_ctx=node_ctx, symtable=symtable,
+            scalar_mapping={local_name: tmp_condition_name},  **kwargs
         )
