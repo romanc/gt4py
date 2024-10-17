@@ -17,7 +17,7 @@ import dace.subsets
 import gt4py.cartesian.gtc.common as common
 from gt4py import eve
 from gt4py.cartesian.gtc.dace import daceir as dcir
-from gt4py.cartesian.gtc.dace.expansion.sdfg_builder import StencilComputationSDFGBuilder
+from gt4py.cartesian.gtc.dace.expansion.sdfg_context import SDFGContext
 from gt4py.cartesian.gtc.dace.symbol_utils import get_axis_bound_str
 from gt4py.cartesian.gtc.dace.utils import make_dace_subset
 from gt4py.eve.codegen import FormatTemplate as as_fmt
@@ -72,7 +72,7 @@ class TaskletCodegen(eve.codegen.TemplatedGenerator, eve.VisitorWithSymbolTableT
         node: dcir.IndexAccess,
         *,
         is_target: bool,
-        sdfg_ctx: StencilComputationSDFGBuilder.SDFGContext,
+        sdfg_ctx: SDFGContext,
         symtable: ChainMap[eve.SymbolRef, dcir.Decl],
         **kwargs: Any,
     ) -> str:
