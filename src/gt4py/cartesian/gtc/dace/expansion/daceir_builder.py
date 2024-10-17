@@ -477,7 +477,6 @@ class DaCeIRBuilder(eve.NodeTranslator):
                 iteration_ctx=iteration_ctx,
                 k_interval=k_interval,
                 memlets=memlets,
-                # declarations=declarations,
                 **kwargs,
             )
             for statement in node.body
@@ -737,7 +736,7 @@ class DaCeIRBuilder(eve.NodeTranslator):
         nodes = flatten_list(nodes)
         if all(isinstance(n, (dcir.NestedSDFG, dcir.DomainMap, dcir.Tasklet)) for n in nodes):
             return nodes
-        
+
         if not all(
             isinstance(n, (dcir.ComputationState, dcir.Condition, dcir.DomainLoop, dcir.WhileLoop))
             for n in nodes
@@ -778,7 +777,7 @@ class DaCeIRBuilder(eve.NodeTranslator):
             for n in nodes
         ):
             return nodes
-        
+
         if all(isinstance(n, (dcir.NestedSDFG, dcir.DomainMap, dcir.Tasklet)) for n in nodes):
             return [dcir.ComputationState(computations=nodes, grid_subset=grid_subset)]
 

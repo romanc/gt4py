@@ -331,9 +331,13 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
 
             field_access = (
                 len(
-                    set([
-                        memlet.connector for memlet in [*node.write_memlets] if memlet.connector == target_name
-                    ])
+                    set(
+                        [
+                            memlet.connector
+                            for memlet in [*node.write_memlets]
+                            if memlet.connector == target_name
+                        ]
+                    )
                 )
                 > 0
             )
@@ -407,13 +411,11 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
                 access_node, tasklet, dst_conn=input_name, memlet=read_memlet
             )
 
-        # TODO fill up node_ctx with access nodes here for later use when visiting Memlets
+        # Fill up node_ctx with access nodes here for later use when visiting Memlets
         # NOTE This is yet another sign that our abstractions (of dace) are bad
         for memlet in node.read_memlets:
             access_node = sdfg_ctx.state.add_access(memlet.field)
             node_ctx.input_node_and_conns[memlet.field] = (access_node, None)
-            #for connector in node.input_connectors:
-            #    node_ctx.input_node_and_conns[connector] = (access_node, None)
         for memlet in node.write_memlets:
             access_node = sdfg_ctx.state.add_access(memlet.field)
             node_ctx.output_node_and_conns[memlet.field] = (access_node, None)
@@ -578,43 +580,23 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
     ) -> dace.nodes.NestedSDFG:
         sdfg = dace.SDFG(node.label)
         inner_sdfg_ctx = StencilComputationSDFGBuilder.SDFGContext(
-            sdfg=sdfg, state=sdfg.add_state(is_start_state=True, label="nSDFG_start"),
+            sdfg=sdfg,
+            state=sdfg.add_state(is_start_state=True, label="nSDFG_start"),
         )
 
         self.visit(
             node.field_decls,
             sdfg_ctx=inner_sdfg_ctx,
-            non_transients={
-                memlet.connector for memlet in node.read_memlets + node.write_memlets
-            },
+            non_transients={memlet.connector for memlet in node.read_memlets + node.write_memlets},
             **kwargs,
         )
 
         self.visit(node.symbol_decls, sdfg_ctx=inner_sdfg_ctx, **kwargs)
         symbol_mapping = {decl.name: decl.to_dace_symbol() for decl in node.symbol_decls}
 
-        # build access nodes and connect them to {input,output}_connectors of the nested SDFG
-        # use an "inner node context" for this and supply this context to the visitor of
-        # computation states (below)
-        #inner_node_ctx = None
-        #if node_ctx is not None:
-        #read_access_and_connectors: Dict[Optional[str], Tuple[dace.nodes.Node, Optional[str]]] = {}
-        #for connector in node.input_connectors:
-        #    read_access_and_connectors[connector] = (
-        #        inner_sdfg_ctx.state.add_access(connector, debuginfo=dace.DebugInfo(0)),
-        #        None,
-        #    )
-#
-        #write_access_and_connectors: Dict[Optional[str], Tuple[dace.nodes.Node, Optional[str]]] = {}
-        #for connector in node.output_connectors:
-        #    write_access_and_connectors[connector] = (
-        #        inner_sdfg_ctx.state.add_access(connector, debuginfo=dace.DebugInfo(0)),
-        #        None,
-        #    )
-
         inner_node_ctx = StencilComputationSDFGBuilder.NodeContext(
-            input_node_and_conns={}, # read_access_and_connectors,
-            output_node_and_conns={}, # write_access_and_connectors,
+            input_node_and_conns={},
+            output_node_and_conns={},
         )
 
         for computation_state in node.states:
@@ -622,7 +604,7 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
                 computation_state,
                 sdfg_ctx=inner_sdfg_ctx,
                 symtable=symtable,
-                node_ctx=inner_node_ctx, # if inner_node_ctx is not None else node_ctx,
+                node_ctx=inner_node_ctx,
                 **kwargs,
             )
 
@@ -636,7 +618,7 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
                 debuginfo=dace.DebugInfo(0),
             )
 
-            # TODO fill up node_ctx with access nodes here for later use when visiting Memlets
+            # Fill up node_ctx with access nodes here for later use when visiting Memlets
             # NOTE This is yet another sign that our abstractions (of dace) are bad
             for memlet in node.read_memlets:
                 if memlet.field not in node_ctx.input_node_and_conns:
