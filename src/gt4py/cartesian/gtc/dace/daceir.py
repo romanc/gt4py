@@ -851,11 +851,11 @@ class Tasklet(ComputationNode, IterationNode, eve.SymbolTableTrait):
 class DomainMap(ComputationNode, IterationNode):
     index_ranges: List[Range]
     schedule: MapSchedule
-    computations: List[Union[Tasklet, DomainMap, NestedSDFG]]
+    computations: List[Union[DomainMap, NestedSDFG, Tasklet]]
 
 
 class ComputationState(IterationNode):
-    computations: List[Union[Tasklet, DomainMap]]
+    computations: List[Union[DomainMap, NestedSDFG, Tasklet]]
 
 
 class DomainLoop(IterationNode, ComputationNode):
