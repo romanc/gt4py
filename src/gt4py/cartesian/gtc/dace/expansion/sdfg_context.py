@@ -67,7 +67,7 @@ class SDFGContext:
     def pop_loop(self):
         self._pop_last("loop_after")
 
-    def add_condition(self, tmp_condition_name: str):
+    def add_condition(self):
         """Inserts a condition state after the current self.state.
         The condition state is connected to a true_state and a false_state based on
         a temporary local variable identified by `node.mask_name`. Both states then merge
@@ -89,8 +89,8 @@ class SDFGContext:
         self.sdfg.add_edge(
             init_state,
             condition_state,
-            # TODO clear this dict
-            dace.InterstateEdge(assignments=dict(if_condition=tmp_condition_name)),
+            # to be updated later (see usage of sdfg_ctx.add_condition())
+            dace.InterstateEdge(assignments=dict(if_condition=None)),
         )
 
         true_state = self.sdfg.add_state("condition_true")
@@ -108,9 +108,12 @@ class SDFGContext:
         self.state_stack.append(merge_state)
         self.state_stack.append(false_state)
         self.state_stack.append(true_state)
-        # push "condition_guard" state
+        self.state_stack.append(condition_state)
         self.state = init_state
         return self
+
+    def pop_condition_guard(self):
+        self._pop_last("condition_guard")
 
     def pop_condition_true(self):
         self._pop_last("condition_true")
@@ -121,7 +124,7 @@ class SDFGContext:
     def pop_condition_after(self):
         self._pop_last("condition_after")
 
-    def add_while(self, tmp_condition_name: str):
+    def add_while(self):
         """Inserts a while loop after the current self.state.
         ...
         """
@@ -139,8 +142,8 @@ class SDFGContext:
         self.sdfg.add_edge(
             init_state,
             guard_state,
-            # TODO: clear this dict
-            dace.InterstateEdge(assignments=dict(loop_condition=tmp_condition_name)),
+            # to be updated later (see usage of sdfg_ctx.add_while())
+            dace.InterstateEdge(assignments=dict(loop_condition=None)),
         )
 
         loop_state = self.sdfg.add_state("while_loop")

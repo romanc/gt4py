@@ -26,6 +26,10 @@ from gt4py.cartesian.gtc.dace.symbol_utils import data_type_to_dace_typeclass
 from gt4py.cartesian.gtc.dace.utils import make_dace_subset
 
 
+def exported_scalar_name(*, local_name: str) -> str:
+    return f"gtEXP__{local_name}"
+
+
 class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
     @dataclass
     class NodeContext:
@@ -91,34 +95,39 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         symtable: ChainMap[eve.SymbolRef, dcir.Decl],
         **kwargs: Any,
     ) -> None:
-        tmp_condition_name = f"tmp_conditional_{id(node)}"
-        sdfg_ctx.add_while(tmp_condition_name)
+        sdfg_ctx.add_while()
         assert sdfg_ctx.state.label.startswith("while_init")
+        state_init = sdfg_ctx.state
+
+        local_condition = f"while_expression_{id(node)}"
         self._add_condition_evaluation_tasklet(
-            tmp_condition_name,
             node,
             sdfg_ctx=sdfg_ctx,
             node_ctx=node_ctx,
             symtable=symtable,
+            local_name=local_condition,
             **kwargs,
         )
 
-        # Cleanup: we might not need this state on the stack anymore
         sdfg_ctx.pop_while_guard()
-        assert sdfg_ctx.state.label.startswith("while_guard")
+        state_guard = sdfg_ctx.state
+
         # update edge (from while_init to while_guard) here, now that we know
         # what to put in the assignment dict
-        # edges = sdfg_ctx.sdfg.edges_between("while_init", "while_guard")
-        # assert len(edges) == 1
-        # edges[0].data.assignments.update({"loop_condition": "condition_name_as_exported_from_the_tasklet"})
+        # TODO
+        # clean this up. With `exported_scalar_name(local_name=...)`we can know (in advance) inside
+        # sdfg_ctx.add_while() / sdfg_ctx.add_condition() what the assignments dict will look like
+        edges = sdfg_ctx.sdfg.edges_between(state_init, state_guard)
+        assert len(edges) == 1
+        edges[0].data.assignments.update(
+            {"loop_condition": exported_scalar_name(local_name=local_condition)}
+        )
 
         sdfg_ctx.pop_while_loop()
-        assert sdfg_ctx.state.label.startswith("while_loop")
         for state in node.body:
             self.visit(state, sdfg_ctx=sdfg_ctx, node_ctx=node_ctx, symtable=symtable, **kwargs)
 
         sdfg_ctx.pop_while_after()
-        assert sdfg_ctx.state.label.startswith("while_after")
 
     def visit_Condition(
         self,
@@ -129,25 +138,33 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         symtable: ChainMap[eve.SymbolRef, dcir.Decl],
         **kwargs: Any,
     ) -> None:
-        tmp_condition_name = f"tmp_conditional_{id(node)}"
-        sdfg_ctx.add_condition(tmp_condition_name)
+        sdfg_ctx.add_condition()
         assert sdfg_ctx.state.label.startswith("condition_init")
+        state_init = sdfg_ctx.state
+
+        local_condition = f"if_expression_{id(node)}"
         self._add_condition_evaluation_tasklet(
-            tmp_condition_name,
             node,
             sdfg_ctx=sdfg_ctx,
             node_ctx=node_ctx,
             symtable=symtable,
+            local_name=local_condition,
             **kwargs,
         )
 
         # pop "condition_guard" here
+        sdfg_ctx.pop_condition_guard()
+        state_guard = sdfg_ctx.state
 
         # fetch the edge
         # update the assignments on the edge with the condition as exported from the tasklet
+        edges = sdfg_ctx.sdfg.edges_between(state_init, state_guard)
+        assert len(edges) == 1
+        edges[0].data.assignments.update(
+            {"if_condition": exported_scalar_name(local_name=local_condition)}
+        )
 
         sdfg_ctx.pop_condition_true()
-        assert sdfg_ctx.state.label.startswith("condition_true")
         for state in node.true_state:
             self.visit(state, sdfg_ctx=sdfg_ctx, node_ctx=node_ctx, symtable=symtable, **kwargs)
 
@@ -156,7 +173,6 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
             self.visit(state, sdfg_ctx=sdfg_ctx, node_ctx=node_ctx, symtable=symtable, **kwargs)
 
         sdfg_ctx.pop_condition_after()
-        assert sdfg_ctx.state.label.startswith("condition_after")
 
     def visit_Tasklet(
         self,
@@ -218,9 +234,12 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
                 )
 
             if len(matches) > 0:
+                exported_name = exported_scalar_name(local_name=target_name)
                 tasklet_outputs.add(target_name)
                 sdfg_ctx.sdfg.add_scalar(
-                    scalar_mapping[target_name], dtype=data_type_to_dace_typeclass(matches[0].dtype), transient=True
+                    exported_name,
+                    dtype=data_type_to_dace_typeclass(matches[0].dtype),
+                    transient=True,
                 )
 
         # merge read_memlets with reads of local scalars (unless written in the same tasklet)
@@ -264,17 +283,16 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
 
         # add memlets for local scalars into / out of tasklet
         for connector in tasklet_outputs:
-            output_name = scalar_mapping[connector]
-            access_node = sdfg_ctx.state.add_access(output_name)
-            write_memlet = dace.Memlet(data=output_name)
+            exported_name = exported_scalar_name(local_name=connector)
+            access_node = sdfg_ctx.state.add_write(exported_name)
             sdfg_ctx.state.add_memlet_path(
-                tasklet, access_node, src_conn=connector, memlet=write_memlet
+                tasklet, access_node, src_conn=connector, memlet=dace.Memlet(data=exported_name)
             )
-        for input_name in tasklet_inputs:
-            access_node = sdfg_ctx.state.add_access(input_name)
-            read_memlet = dace.Memlet(data=input_name)
+        for connector in tasklet_inputs:
+            exported_name = exported_scalar_name(local_name=connector)
+            access_node = sdfg_ctx.state.add_read(exported_name)
             sdfg_ctx.state.add_memlet_path(
-                access_node, tasklet, dst_conn=input_name, memlet=read_memlet
+                access_node, tasklet, dst_conn=connector, memlet=dace.Memlet(data=exported_name)
             )
 
         # Fill up node_ctx with access nodes here for later use when visiting Memlets
@@ -527,27 +545,23 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
 
     def _add_condition_evaluation_tasklet(
         self,
-        tmp_condition_name: str,
         node: Union[dcir.Condition, dcir.WhileLoop],
         *,
         sdfg_ctx: SDFGContext,
         node_ctx: StencilComputationSDFGBuilder.NodeContext,
         symtable: ChainMap[eve.SymbolRef, Any],
-        **kwargs,
+        local_name: Optional[str] = "condition_expression",
+        **kwargs: Any,
     ) -> None:
-        local_name = "condition_expression"
         tmp_access = dcir.ScalarAccess(name=local_name, dtype=common.DataType.BOOL)
         condition_tasklet = dcir.Tasklet(
             decls=[
-                dcir.LocalScalarDecl(
-                    name=local_name, dtype=tmp_access.dtype, loc=tmp_access.loc
-                )
+                dcir.LocalScalarDecl(name=local_name, dtype=tmp_access.dtype, loc=tmp_access.loc)
             ],
             stmts=[dcir.AssignStmt(left=tmp_access, right=node.condition, loc=tmp_access.loc)],
             read_memlets=[],
             write_memlets=[],
         )
         self.visit(
-            condition_tasklet, sdfg_ctx=sdfg_ctx, node_ctx=node_ctx, symtable=symtable,
-            scalar_mapping={local_name: tmp_condition_name},  **kwargs
+            condition_tasklet, sdfg_ctx=sdfg_ctx, node_ctx=node_ctx, symtable=symtable, **kwargs
         )
