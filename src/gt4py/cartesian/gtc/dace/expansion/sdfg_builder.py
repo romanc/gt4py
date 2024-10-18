@@ -233,7 +233,7 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
                     "Found more than one matching declaration for '%s'" % target_name
                 )
 
-            if len(matches) > 0:
+            if len(matches) > 0 and target_name not in tasklet_outputs:
                 exported_name = exported_scalar_name(local_name=target_name)
                 tasklet_outputs.add(target_name)
                 sdfg_ctx.sdfg.add_scalar(
