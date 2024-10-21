@@ -745,16 +745,6 @@ class AssignStmt(common.AssignStmt[Union[ScalarAccess, IndexAccess], Expr], Stmt
     _dtype_validation = common.assign_stmt_dtype_validation(strict=True)
 
 
-class MaskStmt(Stmt):
-    mask: Expr
-    body: List[Stmt]
-
-    @datamodels.validator("mask")
-    def mask_is_boolean_field_expr(self, attribute: datamodels.Attribute, v: Expr) -> None:
-        if v.dtype != common.DataType.BOOL:
-            raise ValueError("Mask must be a boolean expression.")
-
-
 class HorizontalRestriction(common.HorizontalRestriction[Stmt], Stmt):
     pass
 
@@ -777,10 +767,6 @@ class Cast(common.Cast[Expr], Expr):  # type: ignore
 
 class NativeFuncCall(common.NativeFuncCall[Expr], Expr):
     _dtype_propagation = common.native_func_call_dtype_propagation(strict=True)
-
-
-class While(common.While[Stmt, Expr], Stmt):
-    pass
 
 
 class ScalarDecl(Decl):
@@ -836,20 +822,42 @@ class IterationNode(eve.Node):
     grid_subset: GridSubset
 
 
+class Condition(eve.Node):
+    condition: Expr
+    true_state: List[Union[ComputationState, Condition, WhileLoop]]
+
+    # false_state is unused for now due to how conditions are
+    # parsed at the oir-level
+    # NOTE We should clean this up in the future
+    false_state: List[Union[ComputationState, Condition, WhileLoop]] = eve.field(
+        default_factory=list
+    )
+
+    @datamodels.validator("condition")
+    def condition_is_boolean_expression(self, attribute: datamodels.Attribute, v: Expr) -> None:
+        if v.dtype != common.DataType.BOOL:
+            raise ValueError("Condition must be a boolean expression.")
+
+
 class Tasklet(ComputationNode, IterationNode, eve.SymbolTableTrait):
     decls: List[LocalScalarDecl]
     stmts: List[Stmt]
     grid_subset: GridSubset = GridSubset.single_gridpoint()
 
+    @datamodels.validator("stmts")
+    def non_empty_list(self, attribute: datamodels.Attribute, v: List[Stmt]) -> None:
+        if len(v) < 1:
+            raise ValueError("Tasklet must contain at least one statement.")
+
 
 class DomainMap(ComputationNode, IterationNode):
     index_ranges: List[Range]
     schedule: MapSchedule
-    computations: List[Union[Tasklet, DomainMap, NestedSDFG]]
+    computations: List[Union[DomainMap, NestedSDFG, Tasklet]]
 
 
 class ComputationState(IterationNode):
-    computations: List[Union[Tasklet, DomainMap]]
+    computations: List[Union[DomainMap, Tasklet]]
 
 
 class DomainLoop(IterationNode, ComputationNode):
@@ -858,11 +866,21 @@ class DomainLoop(IterationNode, ComputationNode):
     loop_states: List[Union[ComputationState, DomainLoop]]
 
 
+class WhileLoop(eve.Node):
+    condition: Expr
+    body: List[Union[ComputationState, Condition, WhileLoop]]
+
+    @datamodels.validator("condition")
+    def condition_is_boolean_expression(self, attribute: datamodels.Attribute, v: Expr) -> None:
+        if v.dtype != common.DataType.BOOL:
+            raise ValueError("Condition must be a boolean expression.")
+
+
 class NestedSDFG(ComputationNode, eve.SymbolTableTrait):
     label: eve.Coerced[eve.SymbolRef]
     field_decls: List[FieldDecl]
     symbol_decls: List[SymbolDecl]
-    states: List[Union[DomainLoop, ComputationState]]
+    states: List[Union[ComputationState, DomainLoop]]
 
 
 # There are circular type references with string placeholders. These statements let datamodels resolve those.
