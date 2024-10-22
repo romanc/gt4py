@@ -863,7 +863,7 @@ class ComputationState(IterationNode):
 class DomainLoop(IterationNode, ComputationNode):
     axis: Axis
     index_range: Range
-    loop_states: List[Union[ComputationState, DomainLoop]]
+    loop_states: List[Union[ComputationState, Condition, DomainLoop]]
 
 
 class WhileLoop(eve.Node):
