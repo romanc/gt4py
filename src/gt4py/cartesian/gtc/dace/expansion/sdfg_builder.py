@@ -26,7 +26,8 @@ from gt4py.cartesian.gtc.dace.utils import make_dace_subset
 
 
 def exported_scalar_name(*, local_name: Union[eve.SymbolName, eve.SymbolRef]) -> eve.SymbolName:
-    return eve.SymbolName(f"gtEXP__{local_name}")
+    #return eve.SymbolName(f"gtEXP__{local_name}")
+    return local_name.removeprefix("gtOUT__").removeprefix("gtIN__")
 
 
 class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
