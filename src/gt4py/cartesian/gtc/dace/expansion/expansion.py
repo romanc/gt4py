@@ -146,4 +146,5 @@ class StencilComputationExpansion(dace.library.ExpandTransformation):
         nsdfg: dace.nodes.NestedSDFG = StencilComputationSDFGBuilder().visit(daceir)
 
         StencilComputationExpansion._fix_context(nsdfg, node, parent_state, daceir)
+        nsdfg.sdfg.save(f"/tmp/stencil_{node.label}_{id(node)}.sdfg")
         return nsdfg
