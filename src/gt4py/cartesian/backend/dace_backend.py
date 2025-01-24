@@ -18,6 +18,7 @@ import dace
 import dace.data
 from dace.sdfg.utils import inline_sdfgs
 
+import gt4py.cartesian.gtc.dace.daceir as dcir
 from gt4py import storage as gt_storage
 from gt4py.cartesian import config as gt_config
 from gt4py.cartesian.backend.base import CLIBackendMixin, register
@@ -119,8 +120,6 @@ def _set_expansion_orders(sdfg: dace.SDFG):
 
 
 def _set_tile_sizes(sdfg: dace.SDFG):
-    import gt4py.cartesian.gtc.dace.daceir as dcir  # avoid circular import
-
     for node, _ in filter(
         lambda n: isinstance(n[0], StencilComputation), sdfg.all_nodes_recursive()
     ):
