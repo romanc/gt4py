@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict
+from typing import Dict, Set
 
 import dace
 import dace.properties
@@ -36,6 +36,8 @@ class OirSDFGBuilder(eve.NodeVisitor):
         decls: Dict[str, oir.Decl]
         block_extents: Dict[int, Extent]
         access_infos: Dict[str, dcir.FieldAccessInfo]
+        # Temporary arrays might be passed from one library node to another
+        exported_temporaries: Set[str]
 
         def __init__(self, stencil: oir.Stencil):
             self.sdfg = dace.SDFG(stencil.name)
@@ -51,6 +53,7 @@ class OirSDFGBuilder(eve.NodeVisitor):
                 collect_write=True,
                 include_full_domain=True,
             )
+            self.exported_temporaries = set()
 
         def make_shape(self, field):
             if field not in self.access_infos:
@@ -115,6 +118,13 @@ class OirSDFGBuilder(eve.NodeVisitor):
         access_collection = AccessCollector.apply(node)
 
         for field in access_collection.read_fields():
+            if (
+                isinstance(ctx.decls[field], oir.Temporary)
+                and field not in ctx.exported_temporaries
+            ):
+                # Don't add input connections for temporaries that haven't been exported by another library node yet.
+                continue
+
             access_node = state.add_access(field, debuginfo=dace.DebugInfo(0))
             library_node.add_in_connector("__in_" + field)
             subset = ctx.make_input_dace_subset(node, field)
@@ -129,6 +139,10 @@ class OirSDFGBuilder(eve.NodeVisitor):
             state.add_edge(
                 library_node, "__out_" + field, access_node, None, dace.Memlet(field, subset=subset)
             )
+
+            if isinstance(ctx.decls[field], oir.Temporary):
+                # Keep track of temporaries which could be used in subsequent library nodes
+                ctx.exported_temporaries.add(field)
 
     def visit_Stencil(self, node: oir.Stencil):
         ctx = OirSDFGBuilder.SDFGContext(stencil=node)
@@ -168,4 +182,7 @@ class OirSDFGBuilder(eve.NodeVisitor):
             )
         self.generic_visit(node, ctx=ctx)
         ctx.sdfg.validate()
+        # TODO
+        # We can't simplify the array here since we need the shape of temporaries in library nodes
+        # (even for the ones that are only accessed from within one library node).
         return ctx.sdfg
