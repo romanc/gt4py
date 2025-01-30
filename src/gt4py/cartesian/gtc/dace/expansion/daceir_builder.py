@@ -186,6 +186,16 @@ class DaCeIRBuilder(eve.NodeTranslator):
             for symbol in access_info.grid_subset.free_symbols:
                 symbol_collector.add_symbol(symbol)
 
+            if isinstance(oir_decl, oir.Temporary):
+                return dcir.Temporary(
+                    name=field,
+                    dtype=oir_decl.dtype,
+                    strides=tuple(str(s) for s in dace_array.strides),
+                    data_dims=oir_decl.data_dims,
+                    access_info=access_info,
+                    storage=dcir.StorageType.from_dace_storage(dace.StorageType.Default),
+                )
+
             return dcir.FieldDecl(
                 name=field,
                 dtype=oir_decl.dtype,

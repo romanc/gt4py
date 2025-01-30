@@ -725,6 +725,10 @@ class FieldDecl(Decl):
         )
 
 
+class Temporary(FieldDecl):
+    pass
+
+
 class Literal(common.Literal, Expr):
     pass
 
@@ -794,10 +798,6 @@ class LocalScalarDecl(ScalarDecl):
 class SymbolDecl(ScalarDecl):
     def to_dace_symbol(self):
         return get_dace_symbol(self.name, self.dtype)
-
-
-class Temporary(FieldDecl):
-    pass
 
 
 class ComputationNode(LocNode):

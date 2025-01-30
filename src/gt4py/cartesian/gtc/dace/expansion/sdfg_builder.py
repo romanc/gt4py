@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass
-from typing import Any, ChainMap, Dict, List, Optional, Set, Tuple
+from typing import Any, ChainMap, Dict, List, Optional, Tuple
 
 import dace
 import dace.data
@@ -287,7 +287,6 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         node: dcir.FieldDecl,
         *,
         sdfg_ctx: StencilComputationSDFGBuilder.SDFGContext,
-        non_transients: Set[eve.SymbolRef],
         **kwargs: Any,
     ) -> None:
         assert len(node.strides) == len(node.shape)
@@ -297,7 +296,24 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
             strides=[dace.symbolic.pystr_to_symbolic(s) for s in node.strides],
             dtype=data_type_to_dace_typeclass(node.dtype),
             storage=node.storage.to_dace_storage(),
-            transient=node.name not in non_transients,
+            debuginfo=dace.DebugInfo(0),
+        )
+
+    def visit_Temporary(
+        self,
+        node: dcir.Temporary,
+        *,
+        sdfg_ctx: StencilComputationSDFGBuilder.SDFGContext,
+        **kwargs: Any,
+    ) -> None:
+        assert len(node.strides) == len(node.shape)
+        sdfg_ctx.sdfg.add_array(
+            node.name,
+            shape=node.shape,
+            strides=[dace.symbolic.pystr_to_symbolic(s) for s in node.strides],
+            dtype=data_type_to_dace_typeclass(node.dtype),
+            storage=node.storage.to_dace_storage(),
+            transient=True,
             debuginfo=dace.DebugInfo(0),
         )
 
@@ -324,12 +340,7 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         inner_sdfg_ctx = StencilComputationSDFGBuilder.SDFGContext(
             sdfg=sdfg, state=sdfg.add_state(is_start_block=True)
         )
-        self.visit(
-            node.field_decls,
-            sdfg_ctx=inner_sdfg_ctx,
-            non_transients={memlet.connector for memlet in node.read_memlets + node.write_memlets},
-            **kwargs,
-        )
+        self.visit(node.field_decls, sdfg_ctx=inner_sdfg_ctx, **kwargs)
         self.visit(node.symbol_decls, sdfg_ctx=inner_sdfg_ctx, **kwargs)
         symbol_mapping = {decl.name: decl.to_dace_symbol() for decl in node.symbol_decls}
 
