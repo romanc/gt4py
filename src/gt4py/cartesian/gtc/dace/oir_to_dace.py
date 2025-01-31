@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Set
+from typing import Final, Dict, Set
 
 import dace
 import dace.properties
@@ -29,6 +29,9 @@ from gt4py.cartesian.gtc.passes.oir_optimizations.utils import (
 
 
 class OirSDFGBuilder(eve.NodeVisitor):
+    in_connector_prefix: Final[str] = "__in_"
+    out_connector_prefix: Final[str] = "__out_"
+
     @dataclass
     class SDFGContext:
         sdfg: dace.SDFG
@@ -37,7 +40,7 @@ class OirSDFGBuilder(eve.NodeVisitor):
         block_extents: Dict[int, Extent]
         access_infos: Dict[str, dcir.FieldAccessInfo]
         # Temporary arrays might be passed from one library node to another
-        exported_temporaries: Set[str]
+        produced_temporaries: Set[str]
 
         def __init__(self, stencil: oir.Stencil):
             self.sdfg = dace.SDFG(stencil.name)
@@ -53,7 +56,7 @@ class OirSDFGBuilder(eve.NodeVisitor):
                 collect_write=True,
                 include_full_domain=True,
             )
-            self.exported_temporaries = set()
+            self.produced_temporaries = set()
 
         def make_shape(self, field):
             if field not in self.access_infos:
@@ -120,29 +123,30 @@ class OirSDFGBuilder(eve.NodeVisitor):
         for field in access_collection.read_fields():
             if (
                 isinstance(ctx.decls[field], oir.Temporary)
-                and field not in ctx.exported_temporaries
+                and field not in ctx.produced_temporaries
             ):
                 # Don't add input connections for temporaries that haven't been exported by another library node yet.
                 continue
 
+            # use get_dace_debuginfo() from dace/expansion/utils.py?
             access_node = state.add_access(field, debuginfo=dace.DebugInfo(0))
-            library_node.add_in_connector("__in_" + field)
+            library_node.add_in_connector(self.in_connector_prefix + field)
             subset = ctx.make_input_dace_subset(node, field)
             state.add_edge(
-                access_node, None, library_node, "__in_" + field, dace.Memlet(field, subset=subset)
+                access_node, None, library_node, self.in_connector_prefix + field, dace.Memlet(field, subset=subset)
             )
 
         for field in access_collection.write_fields():
             access_node = state.add_access(field, debuginfo=dace.DebugInfo(0))
-            library_node.add_out_connector("__out_" + field)
+            library_node.add_out_connector(self.out_connector_prefix + field)
             subset = ctx.make_output_dace_subset(node, field)
             state.add_edge(
-                library_node, "__out_" + field, access_node, None, dace.Memlet(field, subset=subset)
+                library_node, self.out_connector_prefix + field, access_node, None, dace.Memlet(field, subset=subset)
             )
 
             if isinstance(ctx.decls[field], oir.Temporary):
                 # Keep track of temporaries which could be used in subsequent library nodes
-                ctx.exported_temporaries.add(field)
+                ctx.produced_temporaries.add(field)
 
     def visit_Stencil(self, node: oir.Stencil):
         ctx = OirSDFGBuilder.SDFGContext(stencil=node)
@@ -182,8 +186,10 @@ class OirSDFGBuilder(eve.NodeVisitor):
             )
         self.generic_visit(node, ctx=ctx)
         ctx.sdfg.validate()
+
         # NOTE
-        # We can't/won't simplify the SDFG here since we need the shape of temporaries in library nodes
-        # (even for the ones that are only accessed from within one library node).
-        # Simplifying the SDFG with the expanded library nodes will eventually take care of this.
+        # We really, really can't simplify here because it will remove unused transients from the
+        # SDFG. Since we are specializing transient strides in _pre_expand_transformations()
+        # (just after this) we absolutely need to these transients to survive until we did that.
+        # ctx.sdfg.simplify()
         return ctx.sdfg

@@ -155,6 +155,8 @@ def _pre_expand_transformations(gtir_pipeline: GtirPipeline, sdfg: dace.SDFG, la
         if array.transient:
             array.lifetime = dace.AllocationLifetime.Persistent
 
+    # can we still do this or should we rather move this after specializing transient strides?
+    # or is this okay after changing the lifetime (and why aren't we doing this in oir_to_dace)?
     sdfg.simplify(validate=False)
 
     _set_expansion_orders(sdfg)

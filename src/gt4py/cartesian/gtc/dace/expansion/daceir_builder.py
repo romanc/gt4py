@@ -474,7 +474,7 @@ class DaCeIRBuilder(eve.NodeTranslator):
             The memlet should pass the full array shape (no tiling) and
             the tasklet expression for array access should use all explicit indexes.
             """
-            array_ndims = len(global_ctx.arrays[memlet.field].shape)
+            array_ndims = len(global_ctx.library_node.access_infos[memlet.field].shape)
             field_decl = global_ctx.library_node.field_decls[memlet.field]
             # calculate array subset on original memlet
             memlet_subset = make_dace_subset(
