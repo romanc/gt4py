@@ -121,23 +121,46 @@ class OirSDFGBuilder(eve.NodeVisitor):
         state.add_node(library_node)
 
         access_collection = AccessCollector.apply(node)
+        access_cache: dict[str, dace.nodes.AccessNode] = {}
 
-        for field in access_collection.read_fields():
-            access_node = state.add_access(field, debuginfo=get_dace_debuginfo(declarations[field]))
-            connector_name = f"{prefix.CONNECTOR_IN}{field}"
-            library_node.add_in_connector(connector_name)
-            subset = ctx.make_input_dace_subset(node, field)
-            state.add_edge(
-                access_node, None, library_node, connector_name, dace.Memlet(field, subset=subset)
+        for access in access_collection.ordered_accesses():
+            field_name = access.field
+
+            if access.is_read:
+                if field_name in access_cache:
+                    # This array is either already connected to the library node (read after read)
+                    # or doesn't need to be connected (read after write).
+                    continue
+
+                access_node = state.add_access(
+                    field_name, debuginfo=get_dace_debuginfo(declarations[field_name])
+                )
+                access_cache[field_name] = access_node
+                connector_name = f"{prefix.CONNECTOR_IN}{field_name}"
+                library_node.add_in_connector(connector_name)
+                state.add_edge(
+                    access_node,
+                    None,
+                    library_node,
+                    connector_name,
+                    dace.Memlet(field_name, subset=ctx.make_input_dace_subset(node, field_name)),
+                )
+                continue
+
+            assert access.is_write
+            access_node = state.add_access(
+                field_name, debuginfo=get_dace_debuginfo(declarations[field_name])
             )
+            access_cache[field_name] = access_node
 
-        for field in access_collection.write_fields():
-            access_node = state.add_access(field, debuginfo=get_dace_debuginfo(declarations[field]))
-            connector_name = f"{prefix.CONNECTOR_OUT}{field}"
+            connector_name = f"{prefix.CONNECTOR_OUT}{field_name}"
             library_node.add_out_connector(connector_name)
-            subset = ctx.make_output_dace_subset(node, field)
             state.add_edge(
-                library_node, connector_name, access_node, None, dace.Memlet(field, subset=subset)
+                library_node,
+                connector_name,
+                access_node,
+                None,
+                dace.Memlet(field_name, subset=ctx.make_output_dace_subset(node, field_name)),
             )
 
     def visit_Stencil(self, node: oir.Stencil):
