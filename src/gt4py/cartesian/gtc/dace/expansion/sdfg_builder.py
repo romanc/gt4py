@@ -360,18 +360,11 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         # Gather scalar writes in this Tasklet
         for access_node in node.walk_values().if_isinstance(dcir.AssignStmt):
             target_name = access_node.left.name
+            if target_name in scalar_outputs:
+                continue
 
-            field_access = (
-                len(
-                    set(
-                        memlet.connector
-                        for memlet in [*node.write_memlets]
-                        if memlet.connector == target_name
-                    )
-                )
-                > 0
-            )
-            if field_access or target_name in scalar_outputs:
+            field_access = any([memlet.connector == target_name for memlet in node.write_memlets])
+            if field_access:
                 continue
 
             assert isinstance(access_node.left, dcir.ScalarAccess)
@@ -391,15 +384,8 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         # Gather scalar reads in this Tasklet
         for access_node in node.walk_values().if_isinstance(dcir.ScalarAccess):
             read_name = access_node.name
-            field_access = (
-                len(
-                    set(
-                        memlet.connector
-                        for memlet in [*node.read_memlets, *node.write_memlets]
-                        if memlet.connector == read_name
-                    )
-                )
-                > 0
+            field_access = any(
+                [memlet.connector == read_name for memlet in node.read_memlets + node.write_memlets]
             )
             defined_symbol = any(read_name in symbol_map for symbol_map in symtable.maps)
 
