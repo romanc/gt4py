@@ -928,7 +928,7 @@ class IRMaker(ast.NodeVisitor):
         return interval
 
     def _visit_computation_node(self, node: ast.With) -> nodes.ComputationBlock:
-        loc = nodes.Location.from_ast_node(node)
+        loc = nodes.Location.from_ast_node(node, scope=self.stencil_name)
         syntax_error = GTScriptSyntaxError(
             f"Invalid 'computation' specification at line {loc.line} (column {loc.column})", loc=loc
         )
@@ -983,7 +983,7 @@ class IRMaker(ast.NodeVisitor):
         return nodes.ComputationBlock(
             interval=interval,
             iteration_order=iteration_order,
-            loc=nodes.Location.from_ast_node(node),
+            loc=nodes.Location.from_ast_node(node, scope=self.stencil_name),
             body=nodes.BlockStmt(stmts=stmts, loc=loc),
         )
 
@@ -1003,7 +1003,7 @@ class IRMaker(ast.NodeVisitor):
             return nodes.Cast(
                 data_type=nodes.DataType.BOOL,
                 expr=nodes.BuiltinLiteral(value=nodes.Builtin.from_value(value)),
-                loc=nodes.Location.from_ast_node(node),
+                loc=nodes.Location.from_ast_node(node, scope=self.stencil_name),
             )
         if isinstance(value, numbers.Number):
             value_type = (
@@ -1016,7 +1016,7 @@ class IRMaker(ast.NodeVisitor):
 
         raise GTScriptSyntaxError(
             f"Unknown constant value found: {value}. Expected boolean or number.",
-            loc=nodes.Location.from_ast_node(node),
+            loc=nodes.Location.from_ast_node(node, scope=self.stencil_name),
         )
 
     def visit_Tuple(self, node: ast.Tuple) -> tuple:
@@ -1030,7 +1030,7 @@ class IRMaker(ast.NodeVisitor):
             return nodes.UnaryOpExpr(
                 op=nodes.UnaryOperator.TRANSPOSED,
                 arg=self.visit(node.value),
-                loc=nodes.Location.from_ast_node(node),
+                loc=nodes.Location.from_ast_node(node, scope=self.stencil_name),
             )
 
         qualified_name = gt_meta.get_qualified_name_from_node(node)
@@ -1040,15 +1040,20 @@ class IRMaker(ast.NodeVisitor):
         symbol = node.id
         if self._is_field(symbol):
             result = nodes.FieldRef.at_center(
-                symbol, axes=self.fields[symbol].axes, loc=nodes.Location.from_ast_node(node)
+                symbol,
+                axes=self.fields[symbol].axes,
+                loc=nodes.Location.from_ast_node(node, scope=self.stencil_name),
             )
         elif self._is_parameter(symbol):
-            result = nodes.VarRef(name=symbol, loc=nodes.Location.from_ast_node(node))
+            result = nodes.VarRef(
+                name=symbol, loc=nodes.Location.from_ast_node(node, scope=self.stencil_name)
+            )
         elif self._is_local_symbol(symbol):
             raise AssertionError("Logic error")
         elif _is_datadims_indexing_name(symbol):
             result = nodes.FieldRef.datadims_index(
-                name=_trim_indexing_symbol(symbol), loc=nodes.Location.from_ast_node(node)
+                name=_trim_indexing_symbol(symbol),
+                loc=nodes.Location.from_ast_node(node, scope=self.stencil_name),
             )
         else:
             raise AssertionError(f"Missing '{symbol}' symbol definition")
@@ -1180,7 +1185,7 @@ class IRMaker(ast.NodeVisitor):
                     raise GTScriptSyntaxError(
                         f"Incorrect data index length {len(result.data_index)}. "
                         f"Invalid data dimension index. Field {result.name} has {len(self.fields[result.name].data_dims)} data dimensions.",
-                        loc=nodes.Location.from_ast_node(node),
+                        loc=nodes.Location.from_ast_node(node, scope=self.stencil_name),
                     )
                 if any(
                     isinstance(index, nodes.ScalarLiteral)
@@ -1192,11 +1197,12 @@ class IRMaker(ast.NodeVisitor):
                     raise GTScriptSyntaxError(
                         f"Data index out of bounds. "
                         f"Found index {result.data_index}, but field {result.name} has {self.fields[result.name].data_dims} data-dimensions",
-                        loc=nodes.Location.from_ast_node(node),
+                        loc=nodes.Location.from_ast_node(node, scope=self.stencil_name),
                     )
             else:
                 raise GTScriptSyntaxError(
-                    "Unrecognized subscript expression", loc=nodes.Location.from_ast_node(node)
+                    "Unrecognized subscript expression",
+                    loc=nodes.Location.from_ast_node(node, scope=self.stencil_name),
                 )
 
         return result
@@ -1208,7 +1214,9 @@ class IRMaker(ast.NodeVisitor):
         if isinstance(arg, numbers.Number):
             return eval("{op}{arg}".format(op=op.python_symbol, arg=arg))
 
-        return nodes.UnaryOpExpr(op=op, arg=arg, loc=nodes.Location.from_ast_node(node))
+        return nodes.UnaryOpExpr(
+            op=op, arg=arg, loc=nodes.Location.from_ast_node(node, scope=self.stencil_name)
+        )
 
     def visit_UAdd(self, node: ast.UAdd) -> nodes.UnaryOperator:
         return nodes.UnaryOperator.POS
@@ -1224,7 +1232,7 @@ class IRMaker(ast.NodeVisitor):
             op=self.visit(node.op),
             rhs=self.visit(node.right),
             lhs=self.visit(node.left),
-            loc=nodes.Location.from_ast_node(node),
+            loc=nodes.Location.from_ast_node(node, scope=self.stencil_name),
         )
 
     def visit_Add(self, node: ast.Add) -> nodes.BinaryOperator:
@@ -1277,7 +1285,12 @@ class IRMaker(ast.NodeVisitor):
         rhs = self.visit(node.values[-1])
         for value in reversed(node.values[:-1]):
             lhs = self.visit(value)
-            rhs = nodes.BinOpExpr(op=op, lhs=lhs, rhs=rhs, loc=nodes.Location.from_ast_node(node))
+            rhs = nodes.BinOpExpr(
+                op=op,
+                lhs=lhs,
+                rhs=rhs,
+                loc=nodes.Location.from_ast_node(node, scope=self.stencil_name),
+            )
             res = rhs
 
         return res
@@ -1293,11 +1306,18 @@ class IRMaker(ast.NodeVisitor):
 
         for i in range(len(node.comparators) - 2, -1, -1):
             lhs = self.visit(node.values[i])
-            rhs = nodes.BinOpExpr(op=op, lhs=lhs, rhs=rhs, loc=nodes.Location.from_ast_node(node))
+            rhs = nodes.BinOpExpr(
+                op=op,
+                lhs=lhs,
+                rhs=rhs,
+                loc=nodes.Location.from_ast_node(node, scope=self.stencil_name),
+            )
             op = self.visit(node.ops[i])
             args.append(lhs)
 
-        result = nodes.BinOpExpr(op=op, lhs=lhs, rhs=rhs, loc=nodes.Location.from_ast_node(node))
+        result = nodes.BinOpExpr(
+            op=op, lhs=lhs, rhs=rhs, loc=nodes.Location.from_ast_node(node, scope=self.stencil_name)
+        )
 
         return result
 
@@ -1337,15 +1357,21 @@ class IRMaker(ast.NodeVisitor):
             raise GTScriptSyntaxError(
                 message="Using function calls in the condition of an if is not allowed,"
                 + " the function needs to be assigned to a variable outside the condition.",
-                loc=nodes.Location.from_ast_node(node),
+                loc=nodes.Location.from_ast_node(node, scope=self.stencil_name),
             ) from e
         result.append(
             nodes.If(
                 condition=condition,
-                loc=nodes.Location.from_ast_node(node),
-                main_body=nodes.BlockStmt(stmts=main_stmts, loc=nodes.Location.from_ast_node(node)),
+                loc=nodes.Location.from_ast_node(node, scope=self.stencil_name),
+                main_body=nodes.BlockStmt(
+                    stmts=main_stmts,
+                    loc=nodes.Location.from_ast_node(node, scope=self.stencil_name),
+                ),
                 else_body=(
-                    nodes.BlockStmt(stmts=else_stmts, loc=nodes.Location.from_ast_node(node))
+                    nodes.BlockStmt(
+                        stmts=else_stmts,
+                        loc=nodes.Location.from_ast_node(node, scope=self.stencil_name),
+                    )
                     if else_stmts
                     else None
                 ),
@@ -1355,7 +1381,7 @@ class IRMaker(ast.NodeVisitor):
         return result
 
     def visit_While(self, node: ast.While) -> list:
-        loc = nodes.Location.from_ast_node(node)
+        loc = nodes.Location.from_ast_node(node, scope=self.stencil_name)
 
         self.decls_stack.append([])
         stmts = gt_utils.flatten([self.visit(stmt) for stmt in node.body])
@@ -1364,7 +1390,7 @@ class IRMaker(ast.NodeVisitor):
         result = [
             nodes.While(
                 condition=self.visit(node.test),
-                loc=nodes.Location.from_ast_node(node),
+                loc=nodes.Location.from_ast_node(node, scope=self.stencil_name),
                 body=nodes.BlockStmt(stmts=stmts, loc=loc),
             )
         ]
@@ -1383,14 +1409,15 @@ class IRMaker(ast.NodeVisitor):
         args = [self.visit(arg) for arg in node.args]
         if len(args) != native_fcn.arity:
             raise GTScriptSyntaxError(
-                "Invalid native function call", loc=nodes.Location.from_ast_node(node)
+                "Invalid native function call",
+                loc=nodes.Location.from_ast_node(node, scope=self.stencil_name),
             )
 
         return nodes.NativeFuncCall(
             func=native_fcn,
             args=args,
             data_type=nodes.DataType.AUTO,
-            loc=nodes.Location.from_ast_node(node),
+            loc=nodes.Location.from_ast_node(node, scope=self.stencil_name),
         )
 
     # -- Statement nodes --
@@ -1432,7 +1459,7 @@ class IRMaker(ast.NodeVisitor):
         if len(node.targets) > 1:
             raise GTScriptSyntaxError(
                 message="Assignment to multiple variables (e.g. var1 = var2 = value) not supported.",
-                loc=nodes.Location.from_ast_node(node),
+                loc=nodes.Location.from_ast_node(node, scope=self.stencil_name),
             )
 
         for t in node.targets[0].elts if isinstance(node.targets[0], ast.Tuple) else node.targets:
@@ -1441,14 +1468,14 @@ class IRMaker(ast.NodeVisitor):
                 if spatial_offset[0] != 0 or spatial_offset[1] != 0:
                     raise GTScriptSyntaxError(
                         message="Assignment to non-zero offsets is not supported in IJ.",
-                        loc=nodes.Location.from_ast_node(t),
+                        loc=nodes.Location.from_ast_node(t, scope=self.stencil_name),
                     )
                 # Case of K-offset
                 if len(spatial_offset) == 3 and spatial_offset[2] != 0:
                     if self.iteration_order == nodes.IterationOrder.PARALLEL:
                         raise GTScriptSyntaxError(
                             message="Assignment to non-zero offsets in K is not available in PARALLEL. Choose FORWARD or BACKWARD.",
-                            loc=nodes.Location.from_ast_node(t),
+                            loc=nodes.Location.from_ast_node(t, scope=self.stencil_name),
                         )
 
             if not self._is_known(name):
@@ -1458,14 +1485,14 @@ class IRMaker(ast.NodeVisitor):
                     if data_index is not None and data_index:
                         raise GTScriptSyntaxError(
                             message="Temporaries with data dimensions need to be declared explicitly.",
-                            loc=nodes.Location.from_ast_node(t),
+                            loc=nodes.Location.from_ast_node(t, scope=self.stencil_name),
                         )
                     field_decl = nodes.FieldDecl(
                         name=name,
                         data_type=nodes.DataType.AUTO,
                         axes=nodes.Domain.LatLonGrid().axes_names,
                         is_api=False,
-                        loc=nodes.Location.from_ast_node(t),
+                        loc=nodes.Location.from_ast_node(t, scope=self.stencil_name),
                     )
 
                 if len(self.decls_stack):
@@ -1484,7 +1511,7 @@ class IRMaker(ast.NodeVisitor):
             if set(par_axes_names) - set(axes):
                 raise GTScriptSyntaxError(
                     message=f"Cannot assign to field '{node.targets[0].id}' as all parallel axes '{par_axes_names}' are not present.",
-                    loc=nodes.Location.from_ast_node(t),
+                    loc=nodes.Location.from_ast_node(t, scope=self.stencil_name),
                 )
 
             target.append(self.visit(t))
@@ -1494,7 +1521,11 @@ class IRMaker(ast.NodeVisitor):
         assert len(target) == len(value)
         for left, right in zip(target, value):
             result.append(
-                nodes.Assign(target=left, value=right, loc=nodes.Location.from_ast_node(node))
+                nodes.Assign(
+                    target=left,
+                    value=right,
+                    loc=nodes.Location.from_ast_node(node, scope=self.stencil_name),
+                )
             )
 
         return result
@@ -1604,7 +1635,8 @@ class IRMaker(ast.NodeVisitor):
 
         if not all(isinstance(item, nodes.ComputationBlock) for item in blocks):
             raise GTScriptSyntaxError(
-                "Invalid stencil definition", loc=nodes.Location.from_ast_node(node)
+                "Invalid stencil definition",
+                loc=nodes.Location.from_ast_node(node, scope=self.stencil_name),
             )
 
         return blocks
