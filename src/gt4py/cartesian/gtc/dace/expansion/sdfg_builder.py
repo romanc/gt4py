@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass
-from typing import Any, ChainMap, Dict, List, Optional, Set, Tuple
+from typing import Any, ChainMap, Dict, List, Optional, Set
 
 import dace
-import dace.subsets
+from dace import nodes
 
 from gt4py import eve
 from gt4py.cartesian.gtc.dace import daceir as dcir, prefix
@@ -30,34 +30,17 @@ def _node_name_from_connector(connector: str) -> str:
     return connector.removeprefix(prefix.TASKLET_OUT).removeprefix(prefix.TASKLET_IN)
 
 
-def _add_empty_edges(
-    entry_node: dace.nodes.Node,
-    exit_node: dace.nodes.Node,
-    *,
-    sdfg_ctx: StencilComputationSDFGBuilder.SDFGContext,
-    node_ctx: StencilComputationSDFGBuilder.NodeContext,
-) -> None:
-    if not sdfg_ctx.state.in_degree(entry_node) and None in node_ctx.input_node_and_conns:
-        sdfg_ctx.state.add_edge(
-            *node_ctx.input_node_and_conns[None], entry_node, None, dace.Memlet()
-        )
-    if not sdfg_ctx.state.out_degree(exit_node) and None in node_ctx.output_node_and_conns:
-        sdfg_ctx.state.add_edge(
-            exit_node, None, *node_ctx.output_node_and_conns[None], dace.Memlet()
-        )
-
-
 class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
-    @dataclass
-    class NodeContext:
-        input_node_and_conns: Dict[Optional[str], Tuple[dace.nodes.Node, Optional[str]]]
-        output_node_and_conns: Dict[Optional[str], Tuple[dace.nodes.Node, Optional[str]]]
-
     @dataclass
     class SDFGContext:
         sdfg: dace.SDFG
         state: dace.SDFGState
         state_stack: List[dace.SDFGState] = dataclasses.field(default_factory=list)
+
+        # per state access_node cache
+        access_cache: dict[dace.SDFGState, dict[eve.SymbolRef, nodes.AccessNode]] = (
+            dataclasses.field(default_factory=dict)
+        )
 
         def add_state(self, label: Optional[str] = None) -> None:
             new_state = self.sdfg.add_state(label=label)
@@ -220,73 +203,26 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
             self.state = self.state_stack[-1]
             del self.state_stack[-1]
 
-    def visit_Memlet(
-        self,
-        node: dcir.Memlet,
-        *,
-        scope_node: dcir.ComputationNode,
-        sdfg_ctx: StencilComputationSDFGBuilder.SDFGContext,
-        node_ctx: StencilComputationSDFGBuilder.NodeContext,
-        connector_prefix: str = "",
-        symtable: ChainMap[eve.SymbolRef, dcir.Decl],
-    ) -> None:
-        field_decl = symtable[node.field]
-        assert isinstance(field_decl, dcir.FieldDecl)
-        memlet = dace.Memlet(
-            node.field,
-            subset=make_dace_subset(field_decl.access_info, node.access_info, field_decl.data_dims),
-            dynamic=field_decl.is_dynamic,
-        )
-        if node.is_read:
-            sdfg_ctx.state.add_edge(
-                *node_ctx.input_node_and_conns[memlet.data],
-                scope_node,
-                connector_prefix + node.connector,
-                memlet,
-            )
-        if node.is_write:
-            sdfg_ctx.state.add_edge(
-                scope_node,
-                connector_prefix + node.connector,
-                *node_ctx.output_node_and_conns[memlet.data],
-                memlet,
-            )
+    def visit_Memlet(self, node: dcir.Memlet, **kwargs: Any) -> None:
+        raise RuntimeError("We shouldn't visit memlets anymore. DaCe IR error.")
 
     def visit_WhileLoop(
         self,
         node: dcir.WhileLoop,
         *,
         sdfg_ctx: StencilComputationSDFGBuilder.SDFGContext,
-        node_ctx: StencilComputationSDFGBuilder.NodeContext,
         **kwargs: Any,
     ) -> None:
         sdfg_ctx.add_while(node)
         assert sdfg_ctx.state.label.startswith("while_init")
 
-        read_acc_and_conn: dict[Optional[str], tuple[dace.nodes.Node, Optional[str]]] = {}
-        write_acc_and_conn: dict[Optional[str], tuple[dace.nodes.Node, Optional[str]]] = {}
-        for memlet in node.condition.read_memlets:
-            if memlet.field not in read_acc_and_conn:
-                read_acc_and_conn[memlet.field] = (
-                    sdfg_ctx.state.add_access(memlet.field, debuginfo=dace.DebugInfo(0)),
-                    None,
-                )
-        for memlet in node.condition.write_memlets:
-            if memlet.field not in write_acc_and_conn:
-                write_acc_and_conn[memlet.field] = (
-                    sdfg_ctx.state.add_access(memlet.field, debuginfo=dace.DebugInfo(0)),
-                    None,
-                )
-        eval_node_ctx = StencilComputationSDFGBuilder.NodeContext(
-            input_node_and_conns=read_acc_and_conn, output_node_and_conns=write_acc_and_conn
-        )
-        self.visit(node.condition, sdfg_ctx=sdfg_ctx, node_ctx=eval_node_ctx, **kwargs)
+        self.visit(node.condition, sdfg_ctx=sdfg_ctx, **kwargs)
 
         sdfg_ctx.pop_while_guard()
         sdfg_ctx.pop_while_loop()
 
         for state in node.body:
-            self.visit(state, sdfg_ctx=sdfg_ctx, node_ctx=node_ctx, **kwargs)
+            self.visit(state, sdfg_ctx=sdfg_ctx, **kwargs)
 
         sdfg_ctx.pop_while_after()
 
@@ -295,39 +231,21 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         node: dcir.Condition,
         *,
         sdfg_ctx: StencilComputationSDFGBuilder.SDFGContext,
-        node_ctx: StencilComputationSDFGBuilder.NodeContext,
         **kwargs: Any,
     ) -> None:
         sdfg_ctx.add_condition(node)
         assert sdfg_ctx.state.label.startswith("condition_init")
 
-        read_acc_and_conn: dict[Optional[str], tuple[dace.nodes.Node, Optional[str]]] = {}
-        write_acc_and_conn: dict[Optional[str], tuple[dace.nodes.Node, Optional[str]]] = {}
-        for memlet in node.condition.read_memlets:
-            if memlet.field not in read_acc_and_conn:
-                read_acc_and_conn[memlet.field] = (
-                    sdfg_ctx.state.add_access(memlet.field, debuginfo=dace.DebugInfo(0)),
-                    None,
-                )
-        for memlet in node.condition.write_memlets:
-            if memlet.field not in write_acc_and_conn:
-                write_acc_and_conn[memlet.field] = (
-                    sdfg_ctx.state.add_access(memlet.field, debuginfo=dace.DebugInfo(0)),
-                    None,
-                )
-        eval_node_ctx = StencilComputationSDFGBuilder.NodeContext(
-            input_node_and_conns=read_acc_and_conn, output_node_and_conns=write_acc_and_conn
-        )
-        self.visit(node.condition, sdfg_ctx=sdfg_ctx, node_ctx=eval_node_ctx, **kwargs)
+        self.visit(node.condition, sdfg_ctx=sdfg_ctx, **kwargs)
 
         sdfg_ctx.pop_condition_guard()
         sdfg_ctx.pop_condition_true()
         for state in node.true_states:
-            self.visit(state, sdfg_ctx=sdfg_ctx, node_ctx=node_ctx, **kwargs)
+            self.visit(state, sdfg_ctx=sdfg_ctx, **kwargs)
 
         sdfg_ctx.pop_condition_false()
         for state in node.false_states:
-            self.visit(state, sdfg_ctx=sdfg_ctx, node_ctx=node_ctx, **kwargs)
+            self.visit(state, sdfg_ctx=sdfg_ctx, **kwargs)
 
         sdfg_ctx.pop_condition_after()
 
@@ -335,6 +253,7 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         self,
         node: dcir.Tasklet,
         *,
+        df_scope: dict[str, dict[eve.SymbolRef, nodes.AccessNode]] | None,
         sdfg_ctx: StencilComputationSDFGBuilder.SDFGContext,
         symtable: ChainMap[eve.SymbolRef, dcir.Decl],
         **kwargs: Any,
@@ -390,46 +309,77 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
             ):
                 scalar_inputs.add(read_name)
 
-        inputs = set(memlet.connector for memlet in node.read_memlets).union(scalar_inputs)
-        outputs = set(memlet.connector for memlet in node.write_memlets).union(scalar_outputs)
-
         tasklet = sdfg_ctx.state.add_tasklet(
             name=node.label,
             code=code,
-            inputs=inputs,
-            outputs=outputs,
+            inputs=scalar_inputs | node.input_connectors,
+            outputs=scalar_outputs | node.output_connectors,
             debuginfo=get_dace_debuginfo(node),
         )
 
         # Add memlets for scalars access (read/write)
-        for connector in scalar_outputs:
-            original_name = _node_name_from_connector(connector)
-            access_node = sdfg_ctx.state.add_write(original_name)
-            sdfg_ctx.state.add_memlet_path(
-                tasklet, access_node, src_conn=connector, memlet=dace.Memlet(data=original_name)
-            )
+        cache = sdfg_ctx.access_cache.setdefault(sdfg_ctx.state, dict())
         for connector in scalar_inputs:
             original_name = _node_name_from_connector(connector)
-            access_node = sdfg_ctx.state.add_read(original_name)
+            access_node = cache.setdefault(original_name, sdfg_ctx.state.add_read(original_name))
             sdfg_ctx.state.add_memlet_path(
                 access_node, tasklet, dst_conn=connector, memlet=dace.Memlet(data=original_name)
             )
+        for connector in scalar_outputs:
+            original_name = _node_name_from_connector(connector)
+            access_node = cache.setdefault(original_name, sdfg_ctx.state.add_write(original_name))
+            sdfg_ctx.state.add_memlet_path(
+                tasklet, access_node, src_conn=connector, memlet=dace.Memlet(data=original_name)
+            )
 
         # Add memlets for field access (read/write)
-        self.visit(
-            node.read_memlets,
-            scope_node=tasklet,
-            sdfg_ctx=sdfg_ctx,
-            symtable=symtable,
-            **kwargs,
-        )
-        self.visit(
-            node.write_memlets,
-            scope_node=tasklet,
-            sdfg_ctx=sdfg_ctx,
-            symtable=symtable,
-            **kwargs,
-        )
+        for memlet in node.read_memlets:
+            # setup access_node if needed
+            if memlet.field not in cache:
+                access_node = sdfg_ctx.state.add_read(memlet.field)
+                cache[memlet.field] = access_node
+
+                if memlet.field not in df_scope["input"]:
+                    df_scope["input"][memlet.field] = access_node
+
+            # connect tasklet (in any case)
+            field_decl = symtable[memlet.field]
+            assert isinstance(field_decl, dcir.FieldDecl)
+            sdfg_ctx.state.add_memlet_path(
+                cache[memlet.field],
+                tasklet,
+                dst_conn=memlet.connector,
+                memlet=dace.Memlet(
+                    memlet.field,
+                    subset=make_dace_subset(
+                        field_decl.access_info, memlet.access_info, field_decl.data_dims
+                    ),
+                    dynamic=field_decl.is_dynamic,
+                ),
+            )
+
+        for memlet in node.write_memlets:
+            # setup access_node
+            access_node = sdfg_ctx.state.add_access(memlet.field)
+            cache[memlet.field] = access_node
+
+            df_scope["output"][memlet.field] = access_node
+
+            # connect tasklet
+            field_decl = symtable[memlet.field]
+            assert isinstance(field_decl, dcir.FieldDecl)
+            sdfg_ctx.state.add_memlet_path(
+                tasklet,
+                access_node,
+                src_conn=memlet.connector,
+                memlet=dace.Memlet(
+                    memlet.field,
+                    subset=make_dace_subset(
+                        field_decl.access_info, memlet.access_info, field_decl.data_dims
+                    ),
+                    dynamic=field_decl.is_dynamic,
+                ),
+            )
 
     def visit_Range(self, node: dcir.Range, **kwargs: Any) -> Dict[str, str]:
         start, end = node.interval.to_dace_symbolic()
@@ -439,8 +389,8 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         self,
         node: dcir.DomainMap,
         *,
-        node_ctx: StencilComputationSDFGBuilder.NodeContext,
         sdfg_ctx: StencilComputationSDFGBuilder.SDFGContext,
+        df_scope: dict[str, dict[eve.SymbolRef, nodes.AccessNode]] | None,
         **kwargs: Any,
     ) -> None:
         ndranges = {
@@ -456,44 +406,20 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
             debuginfo=get_dace_debuginfo(node),
         )
 
-        for scope_node in node.computations:
-            input_node_and_conns: Dict[Optional[str], Tuple[dace.nodes.Node, Optional[str]]] = {}
-            output_node_and_conns: Dict[Optional[str], Tuple[dace.nodes.Node, Optional[str]]] = {}
-            for field in set(memlet.field for memlet in scope_node.read_memlets):
-                map_entry.add_in_connector(f"{prefix.PASSTHROUGH_IN}{field}")
-                map_entry.add_out_connector(f"{prefix.PASSTHROUGH_OUT}{field}")
-                input_node_and_conns[field] = (map_entry, f"{prefix.PASSTHROUGH_OUT}{field}")
-            for field in set(memlet.field for memlet in scope_node.write_memlets):
-                map_exit.add_in_connector(f"{prefix.PASSTHROUGH_IN}{field}")
-                map_exit.add_out_connector(f"{prefix.PASSTHROUGH_OUT}{field}")
-                output_node_and_conns[field] = (map_exit, f"{prefix.PASSTHROUGH_IN}{field}")
-            if not input_node_and_conns:
-                input_node_and_conns[None] = (map_entry, None)
-            if not output_node_and_conns:
-                output_node_and_conns[None] = (map_exit, None)
-            inner_node_ctx = StencilComputationSDFGBuilder.NodeContext(
-                input_node_and_conns=input_node_and_conns,
-                output_node_and_conns=output_node_and_conns,
-            )
-            self.visit(scope_node, sdfg_ctx=sdfg_ctx, node_ctx=inner_node_ctx, **kwargs)
+        inner_df_scope: dict[str, dict[eve.SymbolRef, nodes.AccessNode]] = {
+            "input": dict(),
+            "output": dict(),
+        }
 
-        self.visit(
-            node.read_memlets,
-            scope_node=map_entry,
-            sdfg_ctx=sdfg_ctx,
-            node_ctx=node_ctx,
-            connector_prefix=prefix.PASSTHROUGH_IN,
-            **kwargs,
-        )
-        self.visit(
-            node.write_memlets,
-            scope_node=map_exit,
-            sdfg_ctx=sdfg_ctx,
-            node_ctx=node_ctx,
-            connector_prefix=prefix.PASSTHROUGH_OUT,
-            **kwargs,
-        )
-        _add_empty_edges(map_entry, map_exit, sdfg_ctx=sdfg_ctx, node_ctx=node_ctx)
+        for scope_node in node.computations:
+            self.visit(scope_node, sdfg_ctx=sdfg_ctx, df_scope=inner_df_scope, **kwargs)
+
+        # add in/out connectors to map_entry / map_exit nodes from inner_df_scope
+
+        # add empty edges based on inner_df_scope
+
+        # - if df_scope is not None:
+        #     "relay" inner_df_scope to df_scope from outside (adding access nodes in the process)
 
     def visit_DomainLoop(
         self,
@@ -515,32 +441,8 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
     ) -> None:
         sdfg_ctx.add_state()
 
-        # node_ctx is used to keep track of memlets per ComputationState. Conditions and WhileLoops
-        # will (recursively) introduce more than one compute state per vertical loop. We thus drop
-        # any node_ctx that is potentially passed down and instead create a new one for each
-        # ComputationState that we encounter.
-        kwargs.pop("node_ctx", None)
-
-        read_acc_and_conn: Dict[Optional[str], Tuple[dace.nodes.Node, Optional[str]]] = {}
-        write_acc_and_conn: Dict[Optional[str], Tuple[dace.nodes.Node, Optional[str]]] = {}
         for computation in node.computations:
-            assert isinstance(computation, dcir.ComputationNode)
-            for memlet in computation.read_memlets:
-                if memlet.field not in read_acc_and_conn:
-                    read_acc_and_conn[memlet.field] = (
-                        sdfg_ctx.state.add_access(memlet.field),
-                        None,
-                    )
-            for memlet in computation.write_memlets:
-                if memlet.field not in write_acc_and_conn:
-                    write_acc_and_conn[memlet.field] = (
-                        sdfg_ctx.state.add_access(memlet.field),
-                        None,
-                    )
-            node_ctx = StencilComputationSDFGBuilder.NodeContext(
-                input_node_and_conns=read_acc_and_conn, output_node_and_conns=write_acc_and_conn
-            )
-            self.visit(computation, sdfg_ctx=sdfg_ctx, node_ctx=node_ctx, **kwargs)
+            self.visit(computation, sdfg_ctx=sdfg_ctx, **kwargs)
 
     def visit_FieldDecl(
         self,
@@ -575,34 +477,51 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         self,
         node: dcir.NestedSDFG,
         *,
-        sdfg_ctx: Optional[StencilComputationSDFGBuilder.SDFGContext] = None,
-        node_ctx: Optional[StencilComputationSDFGBuilder.NodeContext] = None,
+        sdfg_ctx: StencilComputationSDFGBuilder.SDFGContext | None = None,
+        df_scope: dict[str, dict[eve.SymbolRef, nodes.AccessNode]] | None,
         symtable: ChainMap[eve.SymbolRef, Any],
         **kwargs: Any,
     ) -> dace.nodes.NestedSDFG:
         sdfg = dace.SDFG(node.label)
+
         inner_sdfg_ctx = StencilComputationSDFGBuilder.SDFGContext(
             sdfg=sdfg, state=sdfg.add_state(is_start_block=True)
         )
+        inner_df_scope: dict[str, dict[eve.SymbolRef, nodes.AccessNode]] = {
+            "input": dict(),
+            "output": dict(),
+        }
+
         self.visit(
             node.field_decls,
             sdfg_ctx=inner_sdfg_ctx,
+            df_scope=inner_df_scope,
             non_transients={memlet.connector for memlet in node.read_memlets + node.write_memlets},
             **kwargs,
         )
-        self.visit(node.symbol_decls, sdfg_ctx=inner_sdfg_ctx, **kwargs)
+        self.visit(node.symbol_decls, sdfg_ctx=inner_sdfg_ctx, df_scope=inner_df_scope, **kwargs)
         symbol_mapping = {decl.name: decl.to_dace_symbol() for decl in node.symbol_decls}
 
         for computation_state in node.states:
             self.visit(
                 computation_state,
                 sdfg_ctx=inner_sdfg_ctx,
-                node_ctx=node_ctx,
+                df_scope=inner_df_scope,
                 symtable=symtable,
                 **kwargs,
             )
 
-        if sdfg_ctx is not None and node_ctx is not None:
+        # add in/out connectors to nested SDFG based on inner_df_scope
+        # -> then think about moving the whole thing to the DaCe IR level maybe?
+        #    or why would we have {input,output}_connectors on the node then?
+
+        # add empty edges based on inner_df_scope
+
+        # - if df_scope is not None:
+        #     "relay" inner_df_scope to df_scope from outside (adding access_nodes in the process)
+
+        if sdfg_ctx is not None and df_scope is not None:
+            # we are inside a nested SDFG
             nsdfg = sdfg_ctx.state.add_nested_sdfg(
                 sdfg=sdfg,
                 parent=None,
@@ -610,23 +529,6 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
                 outputs=node.output_connectors,
                 symbol_mapping=symbol_mapping,
             )
-            self.visit(
-                node.read_memlets,
-                scope_node=nsdfg,
-                sdfg_ctx=sdfg_ctx,
-                node_ctx=node_ctx,
-                symtable=symtable.parents,
-                **kwargs,
-            )
-            self.visit(
-                node.write_memlets,
-                scope_node=nsdfg,
-                sdfg_ctx=sdfg_ctx,
-                node_ctx=node_ctx,
-                symtable=symtable.parents,
-                **kwargs,
-            )
-            _add_empty_edges(nsdfg, nsdfg, sdfg_ctx=sdfg_ctx, node_ctx=node_ctx)
             return nsdfg
 
         return dace.nodes.NestedSDFG(
