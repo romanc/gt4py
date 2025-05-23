@@ -253,7 +253,7 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         self,
         node: dcir.Tasklet,
         *,
-        df_scope: dict[str, dict[eve.SymbolRef, nodes.AccessNode]] | None,
+        df_scope: dict[str, dict[eve.SymbolRef, nodes.AccessNode]],
         sdfg_ctx: StencilComputationSDFGBuilder.SDFGContext,
         symtable: ChainMap[eve.SymbolRef, dcir.Decl],
         **kwargs: Any,
@@ -273,8 +273,8 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         # inside Tasklets. And input connectors for all scalar reads unless
         # previously written in the same Tasklet. DaCe's simplify pipeline will get
         # rid of any dead dataflow introduced with this general approach.
-        scalar_inputs: set[str] = set()
-        scalar_outputs: set[str] = set()
+        scalar_inputs: dict[str, eve.SymbolRef] = {}
+        scalar_outputs: dict[str, eve.SymbolRef] = {}
 
         # Gather scalar writes in this Tasklet
         for access_node in node.walk_values().if_isinstance(dcir.AssignStmt):
@@ -288,7 +288,7 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
                 )
 
             original_name = access_node.left.original_name
-            scalar_outputs.add(target_name)
+            scalar_outputs[target_name] = original_name
             if original_name not in sdfg_ctx.sdfg.arrays:
                 sdfg_ctx.sdfg.add_scalar(
                     original_name,
@@ -299,37 +299,35 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         # Gather scalar reads in this Tasklet
         for access_node in node.walk_values().if_isinstance(dcir.ScalarAccess):
             read_name = access_node.name
-            defined_symbol = any(read_name in symbol_map for symbol_map in symtable.maps)
-
             if (
-                not defined_symbol
-                and not access_node.is_target
+                not access_node.is_target
                 and read_name.startswith(prefix.TASKLET_IN)
                 and read_name not in scalar_inputs
+                and not any(
+                    read_name in symbol_map for symbol_map in symtable.maps
+                )  # skip defined symbols
             ):
-                scalar_inputs.add(read_name)
+                scalar_inputs[read_name] = access_node.original_name
 
         tasklet = sdfg_ctx.state.add_tasklet(
             name=node.label,
             code=code,
-            inputs=scalar_inputs | node.input_connectors,
-            outputs=scalar_outputs | node.output_connectors,
+            inputs=node.input_connectors.union(scalar_inputs.keys()),
+            outputs=node.output_connectors.union(scalar_outputs.keys()),
             debuginfo=get_dace_debuginfo(node),
         )
 
         # Add memlets for scalars access (read/write)
         cache = sdfg_ctx.access_cache.setdefault(sdfg_ctx.state, dict())
-        for connector in scalar_inputs:
-            original_name = _node_name_from_connector(connector)
-            access_node = cache.setdefault(original_name, sdfg_ctx.state.add_read(original_name))
+        for connector, node_name in scalar_inputs.items():
+            access_node = cache.setdefault(node_name, sdfg_ctx.state.add_read(node_name))
             sdfg_ctx.state.add_memlet_path(
-                access_node, tasklet, dst_conn=connector, memlet=dace.Memlet(data=original_name)
+                access_node, tasklet, dst_conn=connector, memlet=dace.Memlet(data=node_name)
             )
-        for connector in scalar_outputs:
-            original_name = _node_name_from_connector(connector)
-            access_node = cache.setdefault(original_name, sdfg_ctx.state.add_write(original_name))
+        for connector, node_name in scalar_outputs.items():
+            access_node = cache.setdefault(node_name, sdfg_ctx.state.add_write(node_name))
             sdfg_ctx.state.add_memlet_path(
-                tasklet, access_node, src_conn=connector, memlet=dace.Memlet(data=original_name)
+                tasklet, access_node, src_conn=connector, memlet=dace.Memlet(data=node_name)
             )
 
         # Add memlets for field access (read/write)

@@ -750,7 +750,7 @@ class Literal(common.Literal, Expr):
 
 class ScalarAccess(common.ScalarAccess, Expr):
     is_target: bool
-    original_name: Optional[str] = None
+    original_name: eve.SymbolRef | None = None
 
 
 class VariableKOffset(common.VariableKOffset[Expr]):
