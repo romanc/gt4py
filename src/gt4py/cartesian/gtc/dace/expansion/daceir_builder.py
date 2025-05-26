@@ -466,7 +466,7 @@ class DaCeIRBuilder(eve.NodeTranslator):
     ) -> dcir.Tasklet:
         condition_expression = node.mask if isinstance(node, oir.MaskStmt) else node.cond
         prefix = "if" if isinstance(node, oir.MaskStmt) else "while"
-        tmp_name = f"{prefix}_expression_{id(node)}"
+        tmp_name = eve.SymbolRef(f"{prefix}_expression_{id(node)}")
 
         # Reset the set of targets (used for detecting read after write inside a tasklet)
         targets.clear()
