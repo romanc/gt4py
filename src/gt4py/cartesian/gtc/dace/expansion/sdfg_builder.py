@@ -14,7 +14,6 @@ from typing import Any, ChainMap, Dict, List, Optional, Set
 
 import dace
 from dace import nodes
-from dace.sdfg import propagation
 
 from gt4py import eve
 from gt4py.cartesian.gtc.dace import daceir as dcir, prefix
@@ -46,6 +45,18 @@ def _make_dace_range(
     return dace.subsets.Range(ranges)
 
 
+def _make_dace_memlet(
+    memlet: dcir.Memlet, symtable: ChainMap[eve.SymbolRef, dcir.Decl]
+) -> dace.Memlet:
+    field_decl = symtable[memlet.field]
+    assert isinstance(field_decl, dcir.FieldDecl)
+    return dace.Memlet(
+        memlet.field,
+        subset=_make_dace_range(memlet.access_info, field_decl.data_dims),
+        dynamic=field_decl.is_dynamic,
+    )
+
+
 class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
     @dataclass
     class NestedSDFGContext:
@@ -56,7 +67,13 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
     class DomainMapContext:
         # per DomainMap access cache
         cache: dict[str, dace.nodes.AccessNode]
-        connect: dict[tuple[dace.nodes.Node, str | None], tuple[dace.nodes.Node, str | None]]
+        # input: (AccessNode) -> [(ScopeNode, connector, Memlet)] because Memlet is not hashable
+        # output: (ScopeNode, connector) -> (AccessNode, Memlet)
+        connect: dict[
+            tuple[dace.nodes.AccessNode] | tuple[dace.nodes.Node, str],
+            list[tuple[dace.nodes.Node, str, dace.Memlet]]
+            | tuple[dace.nodes.AccessNode, dace.Memlet],
+        ]
 
         first_child: dace.nodes.Node | None
         last_child: dace.nodes.Node | None
@@ -379,17 +396,11 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
                     nsdfg_scope.reads.add(memlet.field)
 
             # connect tasklet (in any case)
-            field_decl = symtable[memlet.field]
-            assert isinstance(field_decl, dcir.FieldDecl)
             sdfg_ctx.state.add_memlet_path(
                 cache[memlet.field],
                 tasklet,
                 dst_conn=memlet.connector,
-                memlet=dace.Memlet(
-                    memlet.field,
-                    subset=_make_dace_range(memlet.access_info, field_decl.data_dims),
-                    dynamic=field_decl.is_dynamic,
-                ),
+                memlet=_make_dace_memlet(memlet, symtable),
             )
 
         for memlet in node.write_memlets:
@@ -400,17 +411,11 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
             nsdfg_scope.writes.add(memlet.field)
 
             # connect tasklet
-            field_decl = symtable[memlet.field]
-            assert isinstance(field_decl, dcir.FieldDecl)
             sdfg_ctx.state.add_memlet_path(
                 tasklet,
                 access_node,
                 src_conn=memlet.connector,
-                memlet=dace.Memlet(
-                    memlet.field,
-                    subset=_make_dace_range(memlet.access_info, field_decl.data_dims),
-                    dynamic=field_decl.is_dynamic,
-                ),
+                memlet=_make_dace_memlet(memlet, symtable),
             )
 
     def visit_Range(self, node: dcir.Range, **kwargs: Any) -> Dict[str, str]:
@@ -422,6 +427,7 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         node: dcir.DomainMap,
         *,
         sdfg_ctx: StencilComputationSDFGBuilder.SDFGContext,
+        symtable: ChainMap[eve.SymbolRef, dcir.Decl],
         map_scope: StencilComputationSDFGBuilder.DomainMapContext | None = None,
         nsdfg_scope: StencilComputationSDFGBuilder.NestedSDFGContext | None = None,
         **kwargs: Any,
@@ -446,7 +452,13 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
             last_child=None,
         )
 
-        self.visit(node.computations, sdfg_ctx=sdfg_ctx, map_scope=inner_map_scope, **kwargs)
+        self.visit(
+            node.computations,
+            sdfg_ctx=sdfg_ctx,
+            map_scope=inner_map_scope,
+            symtable=symtable,
+            **kwargs,
+        )
 
         if map_scope is not None:
             if map_scope.first_child is None:
@@ -456,9 +468,10 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         cache = sdfg_ctx.access_cache.setdefault(sdfg_ctx.state, {})
 
         previously_written: dict[str, dace.nodes.AccessNode] = {}
-        for index, (src, dst) in enumerate(inner_map_scope.connect.items()):
+        for _index, (src, dst) in enumerate(inner_map_scope.connect.items()):
             # read access
             if isinstance(src[0], dace.nodes.AccessNode):
+                assert isinstance(dst, list)
                 field_name = src[0].data
                 in_connector = f"{prefix.PASSTHROUGH_IN}{field_name}"
                 out_connector = f"{prefix.PASSTHROUGH_OUT}{field_name}"
@@ -466,24 +479,27 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
                 map_entry.add_out_connector(out_connector)
 
                 # connect "inwards"
-                if field_name in previously_written:
-                    # read from access node
-                    sdfg_ctx.state.add_edge(
-                        previously_written[field_name],
-                        None,
-                        dst[0],
-                        dst[1],
-                        dace.Memlet.from_array(field_name, sdfg_ctx.sdfg.arrays[field_name]),
-                    )
-                else:
-                    # connect directly to map_entry node
-                    sdfg_ctx.state.add_edge(
-                        map_entry,
-                        out_connector,
-                        dst[0],
-                        dst[1],
-                        dace.Memlet.from_array(field_name, sdfg_ctx.sdfg.arrays[field_name]),
-                    )
+                for inner_node, inner_connector, inner_memlet in dst:
+                    if field_name in previously_written:
+                        # read from access node
+                        sdfg_ctx.state.add_edge(
+                            previously_written[field_name],
+                            None,
+                            inner_node,
+                            inner_connector,
+                            _make_dace_memlet(inner_memlet, symtable),
+                            # dace.Memlet.from_array(field_name, sdfg_ctx.sdfg.arrays[field_name]), # noqa
+                        )
+                    else:
+                        # connect directly to map_entry node
+                        sdfg_ctx.state.add_edge(
+                            map_entry,
+                            out_connector,
+                            inner_node,
+                            inner_connector,
+                            _make_dace_memlet(inner_memlet, symtable),
+                            # dace.Memlet.from_array(field_name, sdfg_ctx.sdfg.arrays[field_name]), # noqa
+                        )
 
                 # connect "outwards"
                 if map_scope is not None:
@@ -492,8 +508,17 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
                         field_name, dace.nodes.AccessNode(field_name)
                     )
 
-                    # connect (cached) access -> (map_entry, in_connector)
-                    map_scope.connect[(access_node, None)] = (map_entry, in_connector)
+                    # connect (cached) access -> (map_entry, in_connector, memlet)
+                    candidates = [m for m in node.read_memlets if m.field == field_name]
+                    assert len(candidates) == 1
+                    if (access_node,) in map_scope.connect:
+                        map_scope.connect[(access_node,)].append(  # type: ignore
+                            (map_entry, in_connector, candidates[0])
+                        )
+                    else:
+                        map_scope.connect[(access_node,)] = [
+                            (map_entry, in_connector, candidates[0])
+                        ]
                     continue
 
                 access_node = cache.setdefault(field_name, sdfg_ctx.state.add_read(field_name))
@@ -514,6 +539,8 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
                 raise ValueError(
                     f"Expected (write) access node, got {type(dst[0])} instead. DaCe IR error."
                 )
+            assert len(src) == 2
+            assert isinstance(dst, tuple)
 
             field_name = dst[0].data
             in_connector = f"{prefix.PASSTHROUGH_IN}{field_name}"
@@ -523,31 +550,33 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
 
             # connect "inwards"
             handled = False
-            for j_index, item in enumerate(inner_map_scope.connect.items()):
-                if j_index <= index or handled:
-                    continue
-                if item[1][0] == dst[0]:
-                    # write after write
-                    raise NotImplementedError("Write after write in df_scope. Freak out")
-                if item[0][0] == dst[0]:
-                    # read after write, add an access node
-                    node = cache.setdefault(field_name, sdfg_ctx.state.add_access(field_name))
-                    previously_written[field_name] = node
-                    sdfg_ctx.state.add_edge(
-                        src[0],
-                        src[1],
-                        node,
-                        None,
-                        dace.Memlet.from_array(field_name, sdfg_ctx.sdfg.arrays[field_name]),
-                    )
-                    sdfg_ctx.state.add_edge(
-                        node,
-                        None,
-                        map_exit,
-                        in_connector,
-                        dace.Memlet.from_array(field_name, sdfg_ctx.sdfg.arrays[field_name]),
-                    )
-                    handled = True
+            # -/a for j_index, item in enumerate(inner_map_scope.connect.items()):
+            # -/a     if j_index <= index or handled:
+            # -/a         continue
+            # -/a     if item[1][0] == dst[0]:
+            # -/a         # write after write
+            # -/a         raise NotImplementedError("Write after write in df_scope. Freak out")
+            # -/a     if item[0][0] == dst[0]:
+            # -/a         # read after write, add an access node
+            # -/a         node = cache.setdefault(field_name, sdfg_ctx.state.add_access(field_name))
+            # -/a         previously_written[field_name] = node
+            # -/a         sdfg_ctx.state.add_edge(
+            # -/a             src[0],
+            # -/a             src[1],
+            # -/a             node,
+            # -/a             None,
+            # -/a             _make_dace_memlet(dst[1], symtable),
+            # -/a             # dace.Memlet.from_array(field_name, sdfg_ctx.sdfg.arrays[field_name]),
+            # -/a         )
+            # -/a         sdfg_ctx.state.add_edge(
+            # -/a             node,
+            # -/a             None,
+            # -/a             map_exit,
+            # -/a             in_connector,
+            # -/a             _make_dace_memlet(dace.Memlet.from_memlet(dst[1]), symtable),
+            # -/a             # dace.Memlet.from_array(field_name, sdfg_ctx.sdfg.arrays[field_name]),
+            # -/a         )
+            # -/a         handled = True
 
             if not handled:
                 sdfg_ctx.state.add_edge(
@@ -555,7 +584,8 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
                     src[1],
                     map_exit,
                     in_connector,
-                    dace.Memlet.from_array(field_name, sdfg_ctx.sdfg.arrays[field_name]),
+                    _make_dace_memlet(dst[1], symtable),
+                    # dace.Memlet.from_array(field_name, sdfg_ctx.sdfg.arrays[field_name]), # noqa
                 )
 
             # connect "outwards"
@@ -564,7 +594,12 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
                 map_scope.cache[field_name] = dace.nodes.AccessNode(field_name)
 
                 # connect (map_exit, out_connector) -> new access_node
-                map_scope.connect[(map_exit, out_connector)] = (map_scope.cache[field_name], None)
+                candidates = [m for m in node.write_memlets if m.field == field_name]
+                assert len(candidates) == 1
+                map_scope.connect[(map_exit, out_connector)] = (
+                    map_scope.cache[field_name],
+                    candidates[0],
+                )
                 continue
 
             access_node = sdfg_ctx.state.add_write(field_name)
@@ -683,7 +718,7 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
 
         if sdfg_ctx is not None:
             if map_scope is None:
-                raise ValueError("Expected df_scope around nested SDFG.")
+                raise ValueError("Expected map_scope around nested SDFG.")
 
             # we are inside a nested SDFG
             nsdfg = sdfg_ctx.state.add_nested_sdfg(
@@ -705,14 +740,23 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
                 )
 
                 # connect (cached) access -> (nsdfg, node_name)
-                map_scope.connect[(access_node, None)] = (nsdfg, node_name)
+                candidates = [m for m in node.read_memlets if m.field == node_name]
+                assert len(candidates) == 1
+                if (access_node,) in map_scope.connect:
+                    map_scope.connect[(access_node,)].append(  # type: ignore
+                        (nsdfg, node_name, candidates[0])
+                    )
+                else:
+                    map_scope.connect[(access_node,)] = [(nsdfg, node_name, candidates[0])]
 
             for node_name in inner_ndsfg_scope.writes:
                 # always create new access node
                 map_scope.cache[node_name] = dace.nodes.AccessNode(node_name)
 
                 # connect (nsdfg, node_name) -> new access_node
-                map_scope.connect[(nsdfg, node_name)] = (map_scope.cache[node_name], None)
+                candidates = [m for m in node.write_memlets if m.field == node_name]
+                assert len(candidates) == 1
+                map_scope.connect[(nsdfg, node_name)] = (map_scope.cache[node_name], candidates[0])
 
             return nsdfg
 
@@ -724,6 +768,4 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
             outputs=inner_ndsfg_scope.writes,
             symbol_mapping=symbol_mapping,
         )
-        assert nsdfg.sdfg
-        propagation.propagate_memlets_sdfg(nsdfg.sdfg)
         return nsdfg

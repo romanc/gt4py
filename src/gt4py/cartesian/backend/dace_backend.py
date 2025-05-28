@@ -40,7 +40,7 @@ from gt4py.cartesian.gtc.dace.transformations import (
     NoEmptyEdgeTrivialMapElimination,
     nest_sequential_map_scopes,
 )
-from gt4py.cartesian.gtc.dace.utils import array_dimensions, replace_strides
+from gt4py.cartesian.gtc.dace.utils import array_dimensions, replace_strides, simplify
 from gt4py.cartesian.gtc.gtir_to_oir import GTIRToOIR
 from gt4py.cartesian.gtc.passes.gtir_k_boundary import compute_k_boundary
 from gt4py.cartesian.gtc.passes.gtir_pipeline import GtirPipeline
@@ -151,7 +151,7 @@ def _pre_expand_transformations(gtir_pipeline: GtirPipeline, sdfg: dace.SDFG, la
         sdfg.add_state(gtir_pipeline.gtir.name)
         return sdfg
 
-    sdfg.simplify(validate=False)
+    simplify(sdfg, validate=False)
 
     _set_expansion_orders(sdfg)
     _set_tile_sizes(sdfg)
@@ -161,7 +161,8 @@ def _pre_expand_transformations(gtir_pipeline: GtirPipeline, sdfg: dace.SDFG, la
 
 def _post_expand_transformations(sdfg: dace.SDFG):
     # DaCe "standard" clean-up transformations
-    sdfg.simplify(validate=False)
+    sdfg.validate()
+    simplify(sdfg, validate=False)
 
     sdfg.apply_transformations_repeated(NoEmptyEdgeTrivialMapElimination, validate=False)
 
@@ -176,7 +177,7 @@ def _post_expand_transformations(sdfg: dace.SDFG):
 
     # To be re-evaluated with https://github.com/GridTools/gt4py/issues/1896
     # sdfg.apply_transformations_repeated(InlineThreadLocalTransients, validate=False) # noqa: ERA001
-    sdfg.simplify(validate=False)
+    simplify(sdfg, validate=False)
     nest_sequential_map_scopes(sdfg)
     for sd in sdfg.all_sdfgs_recursive():
         sd.openmp_sections = False

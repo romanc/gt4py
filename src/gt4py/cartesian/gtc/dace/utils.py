@@ -13,14 +13,40 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import dace
-import dace.data
 import numpy as np
+from dace.transformation.passes.simplify import SimplifyPass
 
 from gt4py import eve
 from gt4py.cartesian.gtc import common, oir
 from gt4py.cartesian.gtc.common import CartesianOffset, VariableKOffset
 from gt4py.cartesian.gtc.dace import daceir as dcir, prefix
 from gt4py.cartesian.gtc.passes.oir_optimizations.utils import compute_horizontal_block_extents
+
+
+def simplify(
+    sdfg: dace.SDFG,
+    *,
+    skip: set[str] | None = None,
+    validate: bool = True,
+    validate_all: bool = False,
+    verbose: bool = False,
+):
+    """
+    Override of sdfg.simplify() to optionally skip transformations.
+    """
+    skipped_passes = set(
+        [
+            # Scalar to symbol promotion might inline tasklets that contain casts, leading to
+            # un-parsable (by DaCe) assignments on edges.
+            "ScalarToSymbolPromotion"
+        ]
+    )
+    return SimplifyPass(
+        skip=skipped_passes | (skip or set()),
+        validate=validate,
+        validate_all=validate_all,
+        verbose=verbose,
+    ).apply_pass(sdfg, {})
 
 
 def get_dace_debuginfo(node: common.LocNode) -> dace.dtypes.DebugInfo:
