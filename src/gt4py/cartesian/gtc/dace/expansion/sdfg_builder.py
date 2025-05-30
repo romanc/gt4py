@@ -22,14 +22,6 @@ from gt4py.cartesian.gtc.dace.symbol_utils import data_type_to_dace_typeclass
 from gt4py.cartesian.gtc.dace.utils import get_dace_debuginfo
 
 
-def _node_name_from_connector(connector: str) -> str:
-    if not connector.startswith(prefix.TASKLET_IN) and not connector.startswith(prefix.TASKLET_OUT):
-        raise ValueError(
-            f"Connector {connector} doesn't follow the in ({prefix.TASKLET_IN}) or out ({prefix.TASKLET_OUT}) prefix rule"
-        )
-    return connector.removeprefix(prefix.TASKLET_OUT).removeprefix(prefix.TASKLET_IN)
-
-
 def _make_dace_range(
     access_info: dcir.FieldAccessInfo, data_dims: tuple[int, ...]
 ) -> dace.subsets.Range:
