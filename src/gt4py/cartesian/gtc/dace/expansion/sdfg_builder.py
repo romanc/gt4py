@@ -57,18 +57,12 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
 
     @dataclass
     class DomainMapContext:
-        # per DomainMap access cache
-        cache: dict[str, dace.nodes.AccessNode]
-        # input: (AccessNode) -> [(ScopeNode, connector, Memlet)] because Memlet is not hashable
-        # output: (ScopeNode, connector) -> (AccessNode, Memlet)
-        connect: dict[
-            tuple[dace.nodes.AccessNode] | tuple[dace.nodes.Node, str],
-            list[tuple[dace.nodes.Node, str, dace.Memlet]]
-            | tuple[dace.nodes.AccessNode, dace.Memlet],
-        ]
-
-        first_child: dace.nodes.Node | None
-        last_child: dace.nodes.Node | None
+        map_entry: nodes.MapEntry
+        map_exit: nodes.MapExit
+        # per scope access_cache dict[field_name] = (AccessNode, None) or (MapEntry, connector)
+        access_cache: dict[str, tuple[nodes.AccessNode, None] | tuple[nodes.MapEntry, str]]
+        # book-keeping in case the closing MapExit isn't connect to anything yet
+        last_child: nodes.Node | None
 
     @dataclass
     class SDFGContext:
@@ -295,7 +289,7 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         nsdfg_scope: StencilComputationSDFGBuilder.NestedSDFGContext,
         sdfg_ctx: StencilComputationSDFGBuilder.SDFGContext,
         symtable: ChainMap[eve.SymbolRef, dcir.Decl],
-        **kwargs: Any,
+        **_kwargs: Any,
     ) -> None:
         code = TaskletCodegen.apply_codegen(
             node,
@@ -305,7 +299,7 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
             sdfg=sdfg_ctx.sdfg,
         )
 
-        # We are breaking up vertical loops inside stencils in multiple Tasklets
+        # We are breaking up vertical loops inside stencils in multiple Tasklets.
         # It might thus happen that we write a "local" scalar in one Tasklet and
         # read it in another Tasklet (downstream).
         # We thus create output connectors for all writes to scalar variables
@@ -379,7 +373,7 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
 
         # Add memlets for field access (read/write)
         for memlet in node.read_memlets:
-            # setup access_node if needed
+            # setup access_node (if needed)
             if memlet.field not in cache:
                 access_node = sdfg_ctx.state.add_read(memlet.field)
                 cache[memlet.field] = access_node
@@ -388,10 +382,11 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
                     nsdfg_scope.reads.add(memlet.field)
 
             # connect tasklet (in any case)
-            sdfg_ctx.state.add_memlet_path(
+            sdfg_ctx.state.add_edge(
                 cache[memlet.field],
+                None,
                 tasklet,
-                dst_conn=memlet.connector,
+                memlet.connector,
                 memlet=_make_dace_memlet(memlet, symtable),
             )
 
@@ -403,14 +398,15 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
             nsdfg_scope.writes.add(memlet.field)
 
             # connect tasklet
-            sdfg_ctx.state.add_memlet_path(
+            sdfg_ctx.state.add_edge(
                 tasklet,
+                memlet.connector,
                 access_node,
-                src_conn=memlet.connector,
+                None,
                 memlet=_make_dace_memlet(memlet, symtable),
             )
 
-    def visit_Range(self, node: dcir.Range, **kwargs: Any) -> Dict[str, str]:
+    def visit_Range(self, node: dcir.Range, **_kwargs: Any) -> Dict[str, str]:
         start, end = node.interval.to_dace_symbolic()
         return {node.var: str(dace.subsets.Range([(start, end - 1, node.stride)]))}
 
@@ -674,12 +670,12 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         *,
         sdfg_ctx: StencilComputationSDFGBuilder.SDFGContext | None = None,
         map_scope: StencilComputationSDFGBuilder.DomainMapContext | None = None,
+        # not actually used. Just pulling it out of kwargs here for easy replacement with inn_nsdfg_scope inside the function
         nsdfg_scope: StencilComputationSDFGBuilder.NestedSDFGContext | None = None,
-        symtable: ChainMap[eve.SymbolRef, Any],
         **kwargs: Any,
     ) -> dace.nodes.NestedSDFG:
+        # setup inner SDFG and context
         sdfg = dace.SDFG(node.label)
-
         inner_sdfg_ctx = StencilComputationSDFGBuilder.SDFGContext(
             sdfg=sdfg, state=sdfg.add_state(is_start_block=True)
         )
@@ -691,6 +687,7 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
             node.field_decls,
             sdfg_ctx=inner_sdfg_ctx,
             nsdfg_scope=inner_ndsfg_scope,
+            # Transients inside a NestedSDFG are non-transients.
             non_transients={memlet.connector for memlet in node.read_memlets + node.write_memlets},
             **kwargs,
         )
@@ -699,65 +696,87 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         )
         symbol_mapping = {decl.name: decl.to_dace_symbol() for decl in node.symbol_decls}
 
+        # visit child nodes
         for computation_state in node.states:
             self.visit(
-                computation_state,
-                sdfg_ctx=inner_sdfg_ctx,
-                nsdfg_scope=inner_ndsfg_scope,
-                symtable=symtable,
-                **kwargs,
+                computation_state, sdfg_ctx=inner_sdfg_ctx, nsdfg_scope=inner_ndsfg_scope, **kwargs
             )
 
-        if sdfg_ctx is not None:
-            if map_scope is None:
-                raise ValueError("Expected map_scope around nested SDFG.")
+        if sdfg_ctx is None:
+            # This is the top level nested SDFG, i.e. the one used to replace the library node in the expansion.
+            if nsdfg_scope is not None or map_scope is not None:
+                raise ValueError(
+                    "Top-level nested SDFG shouldn't be contained in a scope. DaCeIR error."
+                )
 
-            # we are inside a nested SDFG
-            nsdfg = sdfg_ctx.state.add_nested_sdfg(
+            nsdfg = dace.nodes.NestedSDFG(
+                label=sdfg.label,
                 sdfg=sdfg,
-                parent=None,
                 inputs=inner_ndsfg_scope.reads,
                 outputs=inner_ndsfg_scope.writes,
                 symbol_mapping=symbol_mapping,
             )
-
-            if map_scope.first_child is None:
-                map_scope.first_child = nsdfg
-            map_scope.last_child = nsdfg
-
-            for node_name in inner_ndsfg_scope.reads:
-                # add new access node (if not cached)
-                access_node = map_scope.cache.setdefault(
-                    node_name, dace.nodes.AccessNode(node_name)
-                )
-
-                # connect (cached) access -> (nsdfg, node_name)
-                candidates = [m for m in node.read_memlets if m.field == node_name]
-                assert len(candidates) == 1
-                if (access_node,) in map_scope.connect:
-                    map_scope.connect[(access_node,)].append(  # type: ignore
-                        (nsdfg, node_name, candidates[0])
-                    )
-                else:
-                    map_scope.connect[(access_node,)] = [(nsdfg, node_name, candidates[0])]
-
-            for node_name in inner_ndsfg_scope.writes:
-                # always create new access node
-                map_scope.cache[node_name] = dace.nodes.AccessNode(node_name)
-
-                # connect (nsdfg, node_name) -> new access_node
-                candidates = [m for m in node.write_memlets if m.field == node_name]
-                assert len(candidates) == 1
-                map_scope.connect[(nsdfg, node_name)] = (map_scope.cache[node_name], candidates[0])
-
             return nsdfg
 
-        # top level nested SDFG (the one used to replace the library node in the expansion)
-        nsdfg = dace.nodes.NestedSDFG(
-            label=sdfg.label,
+        # We are inside another nested SDFG:
+        if map_scope is None:
+            raise ValueError("Expected map_scope around nested SDFG.")
+
+        # Add nested SDFG
+        nsdfg = sdfg_ctx.state.add_nested_sdfg(
             sdfg=sdfg,
+            parent=sdfg_ctx.sdfg,
             inputs=inner_ndsfg_scope.reads,
             outputs=inner_ndsfg_scope.writes,
             symbol_mapping=symbol_mapping,
         )
+
+        # Book-keep last_child
+        map_scope.last_child = nsdfg
+
+        # Handle reads
+        for field_name in inner_ndsfg_scope.reads:
+            # Get the dcir.Memlet
+            candidates = [m for m in node.read_memlets if m.field == field_name]
+            if not len(candidates) == 1:
+                raise ValueError(f"Pre-computed dcir.Memlet not found for {field_name}.")
+
+            # cached read
+            if field_name in map_scope.access_cache:
+                src_node, src_connector = map_scope.access_cache[field_name]
+                sdfg_ctx.state.add_edge(
+                    src_node, src_connector, nsdfg, field_name, memlet=candidates[0]
+                )
+                continue
+
+            # new read
+            out_connector = f"{prefix.PASSTHROUGH_OUT}{field_name}"
+            new_in = map_scope.map_entry.add_in_connector(f"{prefix.PASSTHROUGH_IN}{field_name}")
+            new_out = map_scope.map_entry.add_out_connector(out_connector)
+            assert new_in == new_out == True
+            sdfg_ctx.state.add_edge(
+                map_scope.map_entry, out_connector, nsdfg, field_name, memlet=candidates[0]
+            )
+            map_scope.access_cache[field_name] = (map_scope.map_entry, out_connector)
+
+        # If the first child happens to make no input connectors, add an empty memlet instead to preserve order.
+        if sdfg_ctx.state.out_degree(map_scope.map_entry) < 1:
+            sdfg_ctx.state.add_nedge(map_scope.map_entry, nsdfg, dace.Memlet())
+
+        # to be removed again, just a sanity check
+        assert sdfg_ctx.state.out_degree(map_scope.map_entry) >= 1
+
+        # Handle writes
+        for field_name in inner_ndsfg_scope.writes:
+            # always create new access node
+            access_node = nodes.AccessNode(field_name)
+
+            # TODO
+            # finish stuff here, then go to visit_DomainMap
+
+            # # connect (nsdfg, node_name) -> new access_node
+            # candidates = [m for m in node.write_memlets if m.field == field_name]
+            # assert len(candidates) == 1
+            # map_scope.connect[(nsdfg, field_name)] = (map_scope.cache[field_name], candidates[0])
+
         return nsdfg
