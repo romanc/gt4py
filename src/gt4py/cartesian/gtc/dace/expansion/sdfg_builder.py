@@ -434,9 +434,9 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         )
 
         inner_map_scope = StencilComputationSDFGBuilder.DomainMapContext(
-            cache={},
-            connect={},
-            first_child=None,
+            map_entry=map_entry,
+            map_exit=map_exit,
+            access_cache={},
             last_child=None,
         )
 
@@ -448,168 +448,152 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
             **kwargs,
         )
 
-        if map_scope is not None:
-            if map_scope.first_child is None:
-                map_scope.first_child = map_entry
-            map_scope.last_child = map_exit
+        if map_scope is None:
+            # sanity check
+            if nsdfg_scope is None:
+                raise ValueError(
+                    "Expected top-level nested SDFG scope around non-nested DomainMap."
+                )
 
-        cache = sdfg_ctx.access_cache.setdefault(sdfg_ctx.state, {})
+            # There's only ever one outer-most DomainMap because we have one nested SDFG
+            # per vertical domain. We thus don't need to care about read after write and
+            # other complications at this level.
+            for connector in map_entry.in_connectors:
+                field_name = connector.remove_prefix(prefix.PASSTHROUGH_IN)
 
-        previously_written: dict[str, dace.nodes.AccessNode] = {}
-        for _index, (src, dst) in enumerate(inner_map_scope.connect.items()):
-            # read access
-            if isinstance(src[0], dace.nodes.AccessNode):
-                assert isinstance(dst, list)
-                field_name = src[0].data
-                in_connector = f"{prefix.PASSTHROUGH_IN}{field_name}"
-                out_connector = f"{prefix.PASSTHROUGH_OUT}{field_name}"
-                map_entry.add_in_connector(in_connector)
-                map_entry.add_out_connector(out_connector)
+                # Get the dcir.Memlet
+                candidates = [m for m in node.read_memlets if m.field == field_name]
+                if not len(candidates) == 1:
+                    raise ValueError(f"Pre-computed dcir.Memlet not found for {field_name}.")
 
-                # connect "inwards"
-                for inner_node, inner_connector, inner_memlet in dst:
-                    if field_name in previously_written:
-                        # read from access node
-                        sdfg_ctx.state.add_edge(
-                            previously_written[field_name],
-                            None,
-                            inner_node,
-                            inner_connector,
-                            _make_dace_memlet(inner_memlet, symtable),
-                            # dace.Memlet.from_array(field_name, sdfg_ctx.sdfg.arrays[field_name]), # noqa
-                        )
-                    else:
-                        # connect directly to map_entry node
-                        sdfg_ctx.state.add_edge(
-                            map_entry,
-                            out_connector,
-                            inner_node,
-                            inner_connector,
-                            _make_dace_memlet(inner_memlet, symtable),
-                            # dace.Memlet.from_array(field_name, sdfg_ctx.sdfg.arrays[field_name]), # noqa
-                        )
-
-                # connect "outwards"
-                if map_scope is not None:
-                    # add new access node (if not cached)
-                    access_node = map_scope.cache.setdefault(
-                        field_name, dace.nodes.AccessNode(field_name)
-                    )
-
-                    # connect (cached) access -> (map_entry, in_connector, memlet)
-                    candidates = [m for m in node.read_memlets if m.field == field_name]
-                    assert len(candidates) == 1
-                    if (access_node,) in map_scope.connect:
-                        map_scope.connect[(access_node,)].append(  # type: ignore
-                            (map_entry, in_connector, candidates[0])
-                        )
-                    else:
-                        map_scope.connect[(access_node,)] = [
-                            (map_entry, in_connector, candidates[0])
-                        ]
-                    continue
-
-                access_node = cache.setdefault(field_name, sdfg_ctx.state.add_read(field_name))
+                access_node = sdfg_ctx.state.add_read(field_name)
                 sdfg_ctx.state.add_edge(
                     access_node,
                     None,
                     map_entry,
-                    in_connector,
-                    dace.Memlet.from_array(field_name, sdfg_ctx.sdfg.arrays[field_name]),
+                    connector,
+                    _make_dace_memlet(candidates[0], symtable),
                 )
-                if nsdfg_scope is None:
-                    raise ValueError("Expected (top-level) nested SDFG scope. DaCe IR error.")
+
                 nsdfg_scope.reads.add(field_name)
-                continue
 
-            # write access
-            if not isinstance(dst[0], dace.nodes.AccessNode):
-                raise ValueError(
-                    f"Expected (write) access node, got {type(dst[0])} instead. DaCe IR error."
-                )
-            assert len(src) == 2
-            assert isinstance(dst, tuple)
+            for connector in map_exit.out_connectors:
+                field_name = connector.remove_prefix(prefix.PASSTHROUGH_OUT)
 
-            field_name = dst[0].data
-            in_connector = f"{prefix.PASSTHROUGH_IN}{field_name}"
-            out_connector = f"{prefix.PASSTHROUGH_OUT}{field_name}"
-            map_exit.add_in_connector(in_connector)
-            map_exit.add_out_connector(out_connector)
+                # Get the dcir.Memlet
+                candidates = [m for m in node.read_memlets if m.field == field_name]
+                if not len(candidates) == 1:
+                    raise ValueError(f"Pre-computed dcir.Memlet not found for {field_name}.")
 
-            # connect "inwards"
-            handled = False
-            # -/a for j_index, item in enumerate(inner_map_scope.connect.items()):
-            # -/a     if j_index <= index or handled:
-            # -/a         continue
-            # -/a     if item[1][0] == dst[0]:
-            # -/a         # write after write
-            # -/a         raise NotImplementedError("Write after write in df_scope. Freak out")
-            # -/a     if item[0][0] == dst[0]:
-            # -/a         # read after write, add an access node
-            # -/a         node = cache.setdefault(field_name, sdfg_ctx.state.add_access(field_name))
-            # -/a         previously_written[field_name] = node
-            # -/a         sdfg_ctx.state.add_edge(
-            # -/a             src[0],
-            # -/a             src[1],
-            # -/a             node,
-            # -/a             None,
-            # -/a             _make_dace_memlet(dst[1], symtable),
-            # -/a             # dace.Memlet.from_array(field_name, sdfg_ctx.sdfg.arrays[field_name]),
-            # -/a         )
-            # -/a         sdfg_ctx.state.add_edge(
-            # -/a             node,
-            # -/a             None,
-            # -/a             map_exit,
-            # -/a             in_connector,
-            # -/a             _make_dace_memlet(dace.Memlet.from_memlet(dst[1]), symtable),
-            # -/a             # dace.Memlet.from_array(field_name, sdfg_ctx.sdfg.arrays[field_name]),
-            # -/a         )
-            # -/a         handled = True
-
-            if not handled:
+                access_node = sdfg_ctx.state.add_write(field_name)
                 sdfg_ctx.state.add_edge(
-                    src[0],
-                    src[1],
                     map_exit,
-                    in_connector,
-                    _make_dace_memlet(dst[1], symtable),
-                    # dace.Memlet.from_array(field_name, sdfg_ctx.sdfg.arrays[field_name]), # noqa
+                    connector,
+                    access_node,
+                    None,
+                    _make_dace_memlet(candidates[0], symtable),
                 )
 
-            # connect "outwards"
-            if map_scope is not None:
-                # add new access_node
-                map_scope.cache[field_name] = dace.nodes.AccessNode(field_name)
+                nsdfg_scope.writes.add(field_name)
 
-                # connect (map_exit, out_connector) -> new access_node
-                candidates = [m for m in node.write_memlets if m.field == field_name]
-                assert len(candidates) == 1
-                map_scope.connect[(map_exit, out_connector)] = (
-                    map_scope.cache[field_name],
-                    candidates[0],
+            if sdfg_ctx.state.in_degree(map_exit) < 1:
+                # if map_exit isn't connected yet, connect with an empty memlet to the last child
+                sdfg_ctx.state.add_nedge(inner_map_scope.last_child, map_exit, dace.Memlet())
+
+            return
+
+        # in case we are inside another DomainMap
+        map_scope.last_child = map_exit
+
+        # Handle reads
+        for connector in map_entry.in_connectors:
+            field_name = connector.remove_prefix(prefix.PASSTHROUGH_IN)
+
+            # Get the dcir.Memlet
+            candidates = [m for m in node.read_memlets if m.field == field_name]
+            if not len(candidates) == 1:
+                raise ValueError(f"Pre-computed dcir.Memlet not found for {field_name}.")
+
+            if field_name in map_scope.access_cache:
+                # cached read
+                cached_access = map_scope.access_cache[field_name]
+                sdfg_ctx.state.add_edge(
+                    cached_access[0],
+                    cached_access[1],
+                    map_entry,
+                    connector,
+                    _make_dace_memlet(candidates[0], symtable),
                 )
+
                 continue
 
-            access_node = sdfg_ctx.state.add_write(field_name)
-            cache[field_name] = access_node
+            # new read
+            out_connector = f"{prefix.PASSTHROUGH_OUT}{field_name}"
+            new_in = map_scope.map_entry.add_in_connector(connector)
+            new_out = map_scope.map_entry.add_out_connector(out_connector)
+            assert new_in
+            assert new_out
+
             sdfg_ctx.state.add_edge(
-                map_exit,
+                map_scope.map_entry,
                 out_connector,
-                access_node,
-                None,
-                dace.Memlet.from_array(field_name, sdfg_ctx.sdfg.arrays[field_name]),
+                map_entry,
+                connector,
+                _make_dace_memlet(candidates[0], symtable),
             )
 
-            if nsdfg_scope is None:
-                raise ValueError("Expected (top-level) nested SDFG scope. DaCe IR error.")
-            nsdfg_scope.writes.add(field_name)
+            map_scope.access_cache[field_name] = (map_scope.map_entry, out_connector)
 
-        if not map_entry.out_connectors:
-            assert inner_map_scope.first_child is not None, "Expected first_child to be defined."
-            sdfg_ctx.state.add_nedge(map_entry, inner_map_scope.first_child, dace.Memlet())
-        if not map_exit.in_connectors:
-            assert inner_map_scope.last_child is not None, "Expected last_child to be defined."
+        # If the first child happens to make no input connectors, add an empty memlet instead to preserve order.
+        if sdfg_ctx.state.out_degree(map_scope.map_entry) < 1:
+            sdfg_ctx.state.add_nedge(map_scope.map_entry, map_entry, dace.Memlet())
+
+        # to be removed again, just a sanity check
+        assert sdfg_ctx.state.out_degree(map_scope.map_entry) >= 1
+
+        # Handle writes
+        for connector in map_exit.out_connectors:
+            field_name = connector.remove_prefix(prefix.PASSTHROUGH_OUT)
+
+            # Get the dcir.Memlet
+            candidates = [m for m in node.read_memlets if m.field == field_name]
+            if not len(candidates) == 1:
+                raise ValueError(f"Pre-computed dcir.Memlet not found for {field_name}.")
+
+            # always create a new access node
+            access_node = sdfg_ctx.state.add_write(field_name)
+            sdfg_ctx.state.add_edge(
+                map_exit, connector, access_node, None, _make_dace_memlet(candidates[0], symtable)
+            )
+
+            if field_name in map_scope.access_cache:
+                # write after write -> add an empty memlet to ensure order of operations
+                sdfg_ctx.state.add_nedge(
+                    map_scope.access_cache[field_name][0], map_entry, dace.Memlet()
+                )
+            else:
+                # new write
+                in_connector = f"{prefix.PASSTHROUGH_IN}{field_name}"
+                new_in = map_scope.map_exit.add_in_connector(in_connector)
+                new_out = map_scope.map_exit.add_out_connector(connector)
+                assert new_in
+                assert new_out
+
+                map_scope.access_cache[field_name] = (access_node, None)
+
+            sdfg_ctx.state.add_edge(
+                access_node,
+                None,
+                map_scope.map_exit,
+                in_connector,
+                _make_dace_memlet(candidates[0], symtable),
+            )
+
+        if sdfg_ctx.state.in_degree(map_exit) < 1:
+            # if map_exit isn't connected yet, connect with an empty memlet to the last child
             sdfg_ctx.state.add_nedge(inner_map_scope.last_child, map_exit, dace.Memlet())
+
+        # Just for testing - to be removed
         assert node
 
     def visit_DomainLoop(
@@ -672,6 +656,7 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         map_scope: StencilComputationSDFGBuilder.DomainMapContext | None = None,
         # not actually used. Just pulling it out of kwargs here for easy replacement with inn_nsdfg_scope inside the function
         nsdfg_scope: StencilComputationSDFGBuilder.NestedSDFGContext | None = None,
+        symtable: ChainMap[eve.SymbolRef, dcir.Decl],
         **kwargs: Any,
     ) -> dace.nodes.NestedSDFG:
         # setup inner SDFG and context
@@ -689,17 +674,26 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
             nsdfg_scope=inner_ndsfg_scope,
             # Transients inside a NestedSDFG are non-transients.
             non_transients={memlet.connector for memlet in node.read_memlets + node.write_memlets},
+            symtable=symtable,
             **kwargs,
         )
         self.visit(
-            node.symbol_decls, sdfg_ctx=inner_sdfg_ctx, nsdfg_scope=inner_ndsfg_scope, **kwargs
+            node.symbol_decls,
+            sdfg_ctx=inner_sdfg_ctx,
+            nsdfg_scope=inner_ndsfg_scope,
+            symtable=symtable,
+            **kwargs,
         )
         symbol_mapping = {decl.name: decl.to_dace_symbol() for decl in node.symbol_decls}
 
         # visit child nodes
         for computation_state in node.states:
             self.visit(
-                computation_state, sdfg_ctx=inner_sdfg_ctx, nsdfg_scope=inner_ndsfg_scope, **kwargs
+                computation_state,
+                sdfg_ctx=inner_sdfg_ctx,
+                nsdfg_scope=inner_ndsfg_scope,
+                symtable=symtable,
+                **kwargs,
             )
 
         if sdfg_ctx is None:
@@ -745,7 +739,11 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
             if field_name in map_scope.access_cache:
                 src_node, src_connector = map_scope.access_cache[field_name]
                 sdfg_ctx.state.add_edge(
-                    src_node, src_connector, nsdfg, field_name, memlet=candidates[0]
+                    src_node,
+                    src_connector,
+                    nsdfg,
+                    field_name,
+                    _make_dace_memlet(candidates[0], symtable),
                 )
                 continue
 
@@ -753,9 +751,14 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
             out_connector = f"{prefix.PASSTHROUGH_OUT}{field_name}"
             new_in = map_scope.map_entry.add_in_connector(f"{prefix.PASSTHROUGH_IN}{field_name}")
             new_out = map_scope.map_entry.add_out_connector(out_connector)
-            assert new_in == new_out == True
+            assert new_in
+            assert new_out
             sdfg_ctx.state.add_edge(
-                map_scope.map_entry, out_connector, nsdfg, field_name, memlet=candidates[0]
+                map_scope.map_entry,
+                out_connector,
+                nsdfg,
+                field_name,
+                _make_dace_memlet(candidates[0], symtable),
             )
             map_scope.access_cache[field_name] = (map_scope.map_entry, out_connector)
 
@@ -768,15 +771,41 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
 
         # Handle writes
         for field_name in inner_ndsfg_scope.writes:
+            # Get the dcir.Memlet
+            candidates = [m for m in node.read_memlets if m.field == field_name]
+            if not len(candidates) == 1:
+                raise ValueError(f"Pre-computed dcir.Memlet not found for {field_name}.")
+
             # always create new access node
             access_node = nodes.AccessNode(field_name)
+            sdfg_ctx.state.add_edge(
+                nsdfg, field_name, access_node, None, _make_dace_memlet(candidates[0], symtable)
+            )
 
-            # TODO
-            # finish stuff here, then go to visit_DomainMap
+            # optionally add in/out connectors on map_scope
+            in_connector = f"{prefix.PASSTHROUGH_IN}{field_name}"
 
-            # # connect (nsdfg, node_name) -> new access_node
-            # candidates = [m for m in node.write_memlets if m.field == field_name]
-            # assert len(candidates) == 1
-            # map_scope.connect[(nsdfg, field_name)] = (map_scope.cache[field_name], candidates[0])
+            if field_name in map_scope.access_cache:
+                # write after write -> add an empty memlet to ensure order of operations
+                sdfg_ctx.state.add_nedge(
+                    map_scope.access_cache[field_name][0], nsdfg, dace.Memlet()
+                )
+            else:
+                # new write
+                new_in = map_scope.map_exit.add_in_connector(in_connector)
+                new_out = map_scope.map_exit.add_out_connector(
+                    f"{prefix.PASSTHROUGH_OUT}{field_name}"
+                )
+                assert new_in
+                assert new_out
+                map_scope.access_cache[field_name] = (access_node, None)
+
+            sdfg_ctx.state.add_edge(
+                access_node,
+                None,
+                map_scope.map_exit,
+                in_connector,
+                _make_dace_memlet(candidates[0], symtable),
+            )
 
         return nsdfg
