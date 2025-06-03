@@ -463,7 +463,9 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
 
                 # Get the dcir.Memlet
                 candidates = [
-                    m for m in node.read_memlets + node.write_memlets if m.field == field_name
+                    m
+                    for m in node.read_memlets + node.write_memlets
+                    if m.field == field_name and m.is_read
                 ]
                 if not len(candidates) == 1:
                     raise ValueError(f"Pre-computed dcir.Memlet not found for {field_name}.")
@@ -513,7 +515,9 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
 
             # Get the dcir.Memlet
             candidates = [
-                m for m in node.read_memlets + node.write_memlets if m.field == field_name
+                m
+                for m in node.read_memlets + node.write_memlets
+                if m.field == field_name and m.is_read
             ]
             if not len(candidates) == 1:
                 raise ValueError(f"Pre-computed dcir.Memlet not found for {field_name}.")
@@ -571,7 +575,9 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
             )
             in_connector = f"{prefix.PASSTHROUGH_IN}{field_name}"
 
-            if field_name in map_scope.access_cache:
+            if field_name in map_scope.access_cache and isinstance(
+                map_scope.access_cache[field_name][0], nodes.AccessNode
+            ):
                 # write after write -> add an empty memlet to ensure order of operations
                 sdfg_ctx.state.add_nedge(
                     map_scope.access_cache[field_name][0], map_entry, dace.Memlet()
@@ -736,7 +742,9 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
         for field_name in inner_ndsfg_scope.reads:
             # Get the dcir.Memlet
             candidates = [
-                m for m in node.read_memlets + node.write_memlets if m.field == field_name
+                m
+                for m in node.read_memlets + node.write_memlets
+                if m.field == field_name and m.is_read
             ]
             if not len(candidates) == 1:
                 raise ValueError(f"Pre-computed dcir.Memlet not found for {field_name}.")
@@ -791,7 +799,9 @@ class StencilComputationSDFGBuilder(eve.VisitorWithSymbolTableTrait):
             # optionally add in/out connectors on map_scope
             in_connector = f"{prefix.PASSTHROUGH_IN}{field_name}"
 
-            if field_name in map_scope.access_cache:
+            if field_name in map_scope.access_cache and isinstance(
+                map_scope.access_cache[field_name][0], nodes.AccessNode
+            ):
                 # write after write -> add an empty memlet to ensure order of operations
                 sdfg_ctx.state.add_nedge(
                     map_scope.access_cache[field_name][0], nsdfg, dace.Memlet()
