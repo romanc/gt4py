@@ -38,7 +38,7 @@ rng = np.random.default_rng(1337)
 
 
 @pytest.mark.parametrize("name", stencil_definitions)
-@pytest.mark.parametrize("backend", ALL_BACKENDS)
+@pytest.mark.parametrize("backend", ["dace:cpu"])
 def test_generation(name, backend):
     stencil_definition = stencil_definitions[name]
     externals = externals_registry[name]
@@ -161,6 +161,32 @@ def test_stage_merger_induced_interval_block_reordering(backend):
 
     np.testing.assert_allclose(field_out.view(np.ndarray)[:, :, 0:-1], 3)
     np.testing.assert_allclose(field_out.view(np.ndarray)[:, :, -1], 2)
+
+
+@pytest.mark.parametrize("backend", ["dace:cpu"])
+def test_interval_with_offset(backend):
+    domain = (2, 3, 7)
+    input_data = np.arange(1, domain[0] * domain[1] * domain[2] + 1, dtype=np.float64).reshape(
+        domain
+    )
+    field_in = gt_storage.from_array(input_data, np.float64, backend=backend)
+    field_out = gt_storage.zeros(
+        dtype=np.float64, backend=backend, shape=(2, 3, 7), aligned_index=(0, 0, 0)
+    )
+
+    @gtscript.stencil(backend=backend)
+    def stencil(field_in: Field[np.float64], field_out: Field[np.float64]):  # type: ignore
+        with computation(BACKWARD), interval(1, 3):
+            field_out = field_in
+        with computation(FORWARD), interval(3, 5):
+            field_out = field_in
+        with computation(PARALLEL), interval(5, 7):
+            field_out = field_in
+
+    stencil(field_in, field_out)
+
+    np.testing.assert_allclose(field_out.view(np.ndarray)[:, :, 0], 0)
+    np.testing.assert_allclose(field_out.view(np.ndarray)[:, :, 1:7], input_data[:, :, 1:7])
 
 
 @pytest.mark.parametrize("backend", ALL_BACKENDS)

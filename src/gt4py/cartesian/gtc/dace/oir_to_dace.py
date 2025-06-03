@@ -143,6 +143,7 @@ class OirSDFGBuilder(eve.NodeVisitor):
                     None,
                     library_node,
                     connector_name,
+                    # dace.Memlet.from_array(field_name, ctx.sdfg.arrays[field_name]) # noqa
                     dace.Memlet(field_name, subset=ctx.make_input_dace_subset(node, field_name)),
                 )
                 continue
@@ -160,6 +161,7 @@ class OirSDFGBuilder(eve.NodeVisitor):
                 connector_name,
                 access_node,
                 None,
+                # dace.Memlet.from_array(field_name, ctx.sdfg.arrays[field_name]) # noqa
                 dace.Memlet(field_name, subset=ctx.make_output_dace_subset(node, field_name)),
             )
 
