@@ -8,9 +8,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any
-
 from dace import __version__ as dace_version, dtypes, nodes, sdfg, subsets
 from dace.codegen import control_flow as dcf
 from dace.properties import CodeBlock
@@ -18,116 +15,91 @@ from dace.sdfg.analysis.schedule_tree import treenodes as tn
 
 from gt4py import eve
 from gt4py.cartesian.gtc import common
-from gt4py.cartesian.gtc.dace import daceir as dcir, treeir as tir
-
-
-@dataclass
-class Context:
-    tree: tn.ScheduleTreeRoot
-    """A reference to the tree root."""
-    current_scope: tn.ScheduleTreeScope
-    """A reference to the current scope node."""
+from gt4py.cartesian.gtc.dace import daceir as dcir, treeir as tir, treeir_context as tctx
 
 
 class TreeIRToScheduleTree(eve.NodeVisitor):
-    # TODO
-    # More visitors to come here
-
-    class ContextPushPop:
-        """Append the node to the scope, then Push/Pop the scope"""
-
-        def __init__(self, ctx: Context, node: Any):
-            self._ctx = ctx
-            self._parent_scope = ctx.current_scope
-            self._node = node
-
-        def __enter__(self):
-            self._node.parent = self._parent_scope
-            self._parent_scope.children.append(self._node)
-            self._ctx.current_scope = self._node
-
-        def __exit__(self, _exc_type, _exc_value, _traceback):
-            self._ctx.current_scope = self._parent_scope
-
-    def visit_Tasklet(self, node: tir.Tasklet, ctx: Context) -> None:
+    def visit_Tasklet(self, node: tir.Tasklet, ctx: tctx.ScheduleTreeContext) -> None:
         tasklet = tn.TaskletNode(
             node=node.tasklet, in_memlets=node.inputs, out_memlets=node.outputs
         )
         tasklet.parent = ctx.current_scope
         ctx.current_scope.children.append(tasklet)
 
-    def visit_HorizontalLoop(self, node: tir.HorizontalLoop, ctx: Context) -> None:
-        # Define ij/loop
-        ctx.tree.symbols[dcir.Axis.I.iteration_symbol()] = dtypes.int32
-        ctx.tree.symbols[dcir.Axis.J.iteration_symbol()] = dtypes.int32
-        map_entry = nodes.MapEntry(
-            map=nodes.Map(
-                label=f"horizontal_loop_{id(node)}",
-                params=[
-                    str(dcir.Axis.I.iteration_symbol()),
-                    str(dcir.Axis.J.iteration_symbol()),
-                ],
-                # TODO (later)
-                # Ranges have support support for tiling
-                ndrange=subsets.Range(
-                    [
-                        # -1 because range bounds are inclusive
-                        (node.bounds_i.start, f"{node.bounds_i.end} - 1", 1),
-                        (node.bounds_j.start, f"{node.bounds_j.end} - 1", 1),
-                    ]
-                ),
-            )
-        )
+    def visit_HorizontalLoop(self, node: tir.HorizontalLoop, ctx: tctx.ScheduleTreeContext) -> None:
+        # Ensure iteration symbols are defined
+        ctx.root.symbols[dcir.Axis.I.iteration_symbol()] = dtypes.int32
+        ctx.root.symbols[dcir.Axis.J.iteration_symbol()] = dtypes.int32
 
-        # Add MapScope and update ctx.current_scope
+        # Define map scope
         map_scope = tn.MapScope(
-            node=map_entry,
-            children=[],
-        )
-        with TreeIRToScheduleTree.ContextPushPop(ctx, map_scope):
-            self.visit(node.children, ctx=ctx)
-
-    def visit_VerticalLoop(self, node: tir.VerticalLoop, ctx: Context) -> None:
-        if node.loop_order == common.LoopOrder.PARALLEL:
-            # create map and add to tree
-
-            ctx.tree.symbols[dcir.Axis.K.iteration_symbol()] = dtypes.int32
-            map_entry = nodes.MapEntry(
+            node=nodes.MapEntry(
                 map=nodes.Map(
-                    label=f"vertical_loop_{id(node)}",
-                    params=[dcir.Axis.K.iteration_symbol()],
+                    label=f"horizontal_loop_{id(node)}",
+                    params=[
+                        str(dcir.Axis.I.iteration_symbol()),
+                        str(dcir.Axis.J.iteration_symbol()),
+                    ],
                     # TODO (later)
                     # Ranges have support support for tiling
                     ndrange=subsets.Range(
-                        # -1 because range bounds are inclusive
-                        [(node.bounds_k.start, f"{node.bounds_k.end} - 1", 1)]
+                        [
+                            # -1 because range bounds are inclusive
+                            (node.bounds_i.start, f"{node.bounds_i.end} - 1", 1),
+                            (node.bounds_j.start, f"{node.bounds_j.end} - 1", 1),
+                        ]
                     ),
                 )
-            )
+            ),
+            children=[],
+        )
+
+        with tctx.ContextPushPop(ctx, map_scope):
+            self.visit(node.children, ctx=ctx)
+
+    def visit_VerticalLoop(self, node: tir.VerticalLoop, ctx: tctx.ScheduleTreeContext) -> None:
+        if node.loop_order == common.LoopOrder.PARALLEL:
+            # Ensure iteration symbols are defined
+            ctx.root.symbols[dcir.Axis.K.iteration_symbol()] = dtypes.int32
+
+            # Define map scope
             map_scope = tn.MapScope(
-                node=map_entry,
+                node=nodes.MapEntry(
+                    map=nodes.Map(
+                        label=f"vertical_loop_{id(node)}",
+                        params=[dcir.Axis.K.iteration_symbol()],
+                        # TODO (later)
+                        # Ranges have support support for tiling
+                        ndrange=subsets.Range(
+                            # -1 because range bounds are inclusive
+                            [(node.bounds_k.start, f"{node.bounds_k.end} - 1", 1)]
+                        ),
+                    )
+                ),
                 children=[],
             )
-            with TreeIRToScheduleTree.ContextPushPop(ctx, map_scope):
+
+            with tctx.ContextPushPop(ctx, map_scope):
                 self.visit(node.children, ctx=ctx)
         else:
-            # create loop and add it to tree
             for_scope = tn.ForScope(header=_for_scope_header(node), children=[])
-            with TreeIRToScheduleTree.ContextPushPop(ctx, for_scope):
+
+            with tctx.ContextPushPop(ctx, for_scope):
                 self.visit(node.children, ctx=ctx)
 
-    def visit_IfElse(self, node: tir.IfElse, ctx: Context) -> None:
+    def visit_IfElse(self, node: tir.IfElse, ctx: tctx.ScheduleTreeContext) -> None:
         if_scope = tn.IfScope(
             condition=tn.CodeBlock(node.if_condition_code),
             children=[],
         )
-        with TreeIRToScheduleTree.ContextPushPop(ctx, if_scope):
+
+        with tctx.ContextPushPop(ctx, if_scope):
             self.visit(node.children, ctx=ctx)
 
-    def visit_While(self, node: tir.While, ctx: Context) -> None:
+    def visit_While(self, node: tir.While, ctx: tctx.ScheduleTreeContext) -> None:
         while_scope = tn.WhileScope(children=[], header=_while_scope_header(node))
 
-        with TreeIRToScheduleTree.ContextPushPop(ctx, while_scope):
+        with tctx.ContextPushPop(ctx, while_scope):
             self.visit(node.children, ctx=ctx)
 
     def visit_TreeRoot(self, node: tir.TreeRoot) -> tn.ScheduleTreeRoot:
@@ -146,11 +118,11 @@ class TreeIRToScheduleTree(eve.NodeVisitor):
             constants=constants,
             children=[],
         )
-        ctx = Context(tree=tree, current_scope=tree)
+        ctx = tctx.ScheduleTreeContext(root=tree, current_scope=tree)
 
         self.visit(node.children, ctx=ctx)
 
-        return ctx.tree
+        return ctx.root
 
 
 def _for_scope_header(node: tir.VerticalLoop) -> dcf.ForScope:

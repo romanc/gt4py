@@ -6,14 +6,18 @@
 # Please, refer to the LICENSE file in the root directory.
 # SPDX-License-Identifier: BSD-3-Clause
 
-from dataclasses import dataclass
 from typing import Any, List, TypeAlias
 
 from dace import data, dtypes, nodes, symbolic
 
 from gt4py import eve
 from gt4py.cartesian.gtc import common, definitions, oir
-from gt4py.cartesian.gtc.dace import daceir as dcir, oir_to_tasklet, treeir as tir
+from gt4py.cartesian.gtc.dace import (
+    daceir as dcir,
+    oir_to_tasklet,
+    treeir as tir,
+    treeir_context as tctx,
+)
 from gt4py.cartesian.gtc.dace.symbol_utils import data_type_to_dace_typeclass
 from gt4py.cartesian.gtc.dace.utils import get_dace_debuginfo
 from gt4py.cartesian.gtc.passes.oir_optimizations import utils as oir_utils
@@ -25,35 +29,8 @@ ControlFlow: TypeAlias = (
 """All control flow OIR nodes"""
 
 
-@dataclass
-class Context:
-    root: tir.TreeRoot
-    current_scope: tir.TreeScope
-
-    field_extents: dict[str, definitions.Extent]  # field_name -> Extent
-    block_extents: dict[int, definitions.Extent]  # id(horizontal execution) -> Extent
-
-
-# This could (should?) be a NodeTranslator
-# (doesn't really matter for now)
 class OIRToTreeIR(eve.NodeVisitor):
-    class ContextPushPop:
-        """Append the node to the scope, then Push/Pop the scope"""
-
-        def __init__(self, ctx: Context, node: Any):
-            self._ctx = ctx
-            self._parent_scope = ctx.current_scope
-            self._node = node
-
-        def __enter__(self):
-            self._node.parent = self._parent_scope
-            self._parent_scope.children.append(self._node)
-            self._ctx.current_scope = self._node
-
-        def __exit__(self, _exc_type, _exc_value, _traceback):
-            self._ctx.current_scope = self._parent_scope
-
-    def visit_CodeBlock(self, node: oir.CodeBlock, ctx: Context) -> None:
+    def visit_CodeBlock(self, node: oir.CodeBlock, ctx: tctx.TreeIRContext) -> None:
         code, inputs, outputs = oir_to_tasklet.generate(node, tree=ctx.root)
         dace_tasklet = nodes.Tasklet(
             label=node.label,
@@ -94,7 +71,7 @@ class OIRToTreeIR(eve.NodeVisitor):
         return groups
 
     def _insert_evaluation_tasklet(
-        self, node: oir.MaskStmt | oir.While, ctx: Context
+        self, node: oir.MaskStmt | oir.While, ctx: tctx.TreeIRContext
     ) -> tuple[str, oir.AssignStmt]:
         """Evaluate condition in a separate tasklet to avoid sympy problems down the line."""
 
@@ -118,7 +95,9 @@ class OIRToTreeIR(eve.NodeVisitor):
 
         return (condition_name, assignment)
 
-    def visit_HorizontalExecution(self, node: oir.HorizontalExecution, ctx: Context) -> None:
+    def visit_HorizontalExecution(
+        self, node: oir.HorizontalExecution, ctx: tctx.TreeIRContext
+    ) -> None:
         # TODO
         # How do we get the domain in here?!
         # use a dace symbol:
@@ -145,7 +124,7 @@ class OIRToTreeIR(eve.NodeVisitor):
             parent=ctx.current_scope,
         )
 
-        with OIRToTreeIR.ContextPushPop(ctx, loop):
+        with loop.open(ctx):
             # Push local scalars to the tree repository
             for local_scalar in node.declarations:
                 ctx.root.containers[local_scalar.name] = data.Scalar(
@@ -158,28 +137,30 @@ class OIRToTreeIR(eve.NodeVisitor):
             groups = self._group_statements(node)
             self.visit(groups, ctx=ctx)
 
-    def visit_MaskStmt(self, node: oir.MaskStmt, ctx: Context) -> None:
+    def visit_MaskStmt(self, node: oir.MaskStmt, ctx: tctx.TreeIRContext) -> None:
         condition_name, _ = self._insert_evaluation_tasklet(node, ctx)
 
         if_else = tir.IfElse(
             if_condition_code=condition_name, children=[], parent=ctx.current_scope
         )
 
-        with OIRToTreeIR.ContextPushPop(ctx, if_else):
+        with if_else.open(ctx):
             groups = self._group_statements(node)
             self.visit(groups, ctx=ctx)
 
-    def visit_HorizontalRestriction(self, node: oir.HorizontalRestriction, ctx: Context) -> None:
+    def visit_HorizontalRestriction(
+        self, node: oir.HorizontalRestriction, ctx: tctx.TreeIRContext
+    ) -> None:
         """Translate `region` concept into If control flow in TreeIR"""
         condition_code = self.visit(node.mask, ctx=ctx)
         if_else = tir.IfElse(
             if_condition_code=condition_code, children=[], parent=ctx.current_scope
         )
-        with OIRToTreeIR.ContextPushPop(ctx, if_else):
+        with if_else.open(ctx):
             groups = self._group_statements(node)
             self.visit(groups, ctx=ctx)
 
-    def visit_HorizontalMask(self, node: common.HorizontalMask, ctx: Context) -> str:
+    def visit_HorizontalMask(self, node: common.HorizontalMask, ctx: tctx.TreeIRContext) -> str:
         loop_i = dcir.Axis.I.iteration_symbol()
         axis_start_i = "0"
         axis_end_i = dcir.Axis.I.domain_symbol()
@@ -207,7 +188,7 @@ class OIRToTreeIR(eve.NodeVisitor):
 
         return " and ".join(conditions)
 
-    def visit_While(self, node: oir.While, ctx: Context) -> None:
+    def visit_While(self, node: oir.While, ctx: tctx.TreeIRContext) -> None:
         condition_name, assignment = self._insert_evaluation_tasklet(node, ctx)
 
         # Re-evaluate the condition as last step of the while loop
@@ -220,7 +201,7 @@ class OIRToTreeIR(eve.NodeVisitor):
             parent=ctx.current_scope,
         )
 
-        with OIRToTreeIR.ContextPushPop(ctx, while_):
+        with while_.open(ctx):
             groups = self._group_statements(node)
             self.visit(groups, ctx=ctx)
 
@@ -242,7 +223,7 @@ class OIRToTreeIR(eve.NodeVisitor):
         return tir.Bounds(start=start, end=end)
 
     def visit_VerticalLoopSection(
-        self, node: oir.VerticalLoopSection, ctx: Context, loop_order: common.LoopOrder
+        self, node: oir.VerticalLoopSection, ctx: tctx.TreeIRContext, loop_order: common.LoopOrder
     ) -> None:
         bounds = self.visit(
             node.interval,
@@ -255,10 +236,10 @@ class OIRToTreeIR(eve.NodeVisitor):
             loop_order=loop_order, bounds_k=bounds, children=[], parent=ctx.current_scope
         )
 
-        with OIRToTreeIR.ContextPushPop(ctx, loop):
+        with loop.open(ctx):
             self.visit(node.horizontal_executions, ctx=ctx)
 
-    def visit_VerticalLoop(self, node: oir.VerticalLoop, ctx: Context) -> None:
+    def visit_VerticalLoop(self, node: oir.VerticalLoop, ctx: tctx.TreeIRContext) -> None:
         if node.caches:
             raise NotImplementedError("we don't do caches in this prototype")
 
@@ -331,7 +312,7 @@ class OIRToTreeIR(eve.NodeVisitor):
             parent=None,
         )
 
-        ctx = Context(
+        ctx = tctx.TreeIRContext(
             root=tree,
             current_scope=tree,
             field_extents=field_extents,
@@ -350,7 +331,11 @@ class OIRToTreeIR(eve.NodeVisitor):
         return f"{dtype}({expression})"
 
     def visit_CartesianOffset(
-        self, node: common.CartesianOffset, field: oir.FieldAccess, ctx: Context, **_kwargs: Any
+        self,
+        node: common.CartesianOffset,
+        field: oir.FieldAccess,
+        ctx: tctx.TreeIRContext,
+        **_kwargs: Any,
     ) -> str:
         shift = ctx.root.shift[field.name]
         indices: list[str] = []
@@ -366,7 +351,11 @@ class OIRToTreeIR(eve.NodeVisitor):
         return ", ".join(indices)
 
     def visit_VariableKOffset(
-        self, node: oir.VariableKOffset, field: oir.FieldAccess, ctx: Context, **kwargs: Any
+        self,
+        node: oir.VariableKOffset,
+        field: oir.FieldAccess,
+        ctx: tctx.TreeIRContext,
+        **kwargs: Any,
     ) -> str:
         shift = ctx.root.shift[field.name]
         i_shift = f" + {shift[dcir.Axis.I]}" if shift[dcir.Axis.I] != 0 else ""

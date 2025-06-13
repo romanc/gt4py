@@ -14,7 +14,7 @@ from dace import Memlet, data, dtypes, nodes
 
 from gt4py import eve
 from gt4py.cartesian.gtc import common
-from gt4py.cartesian.gtc.dace import daceir as dcir
+from gt4py.cartesian.gtc.dace import daceir as dcir, treeir_context as tctx
 
 
 SymbolDict: TypeAlias = dict[str, dtypes.typeclass]
@@ -30,7 +30,10 @@ class TreeNode(eve.Node):
 
 
 class TreeScope(TreeNode):
-    children: list
+    children: list[TreeScope | TreeNode]
+
+    def open(self, ctx: tctx.TreeIRContext) -> tctx.ContextPushPop[tctx.TreeIRContext, TreeScope]:
+        return tctx.ContextPushPop[tctx.TreeIRContext, TreeScope](ctx, self)
 
 
 class Tasklet(TreeNode):
@@ -55,20 +58,11 @@ class While(TreeScope):
 
 
 class HorizontalLoop(TreeScope):
-    # stuff for ij/loop bounds
     bounds_i: Bounds
     bounds_j: Bounds
 
-    # horizontal restriction:
-    # - touches the bounds of the (horizontal) loop
-    #  -> this can be important for scheduling
-    #     (we could do actual loops on CPU vs. masks in the horizontal loop on GPU)
-    # conditionals:
-    #  -> have no influence on scheduling
-
 
 class VerticalLoop(TreeScope):
-    # header
     loop_order: common.LoopOrder
     bounds_k: Bounds
 
