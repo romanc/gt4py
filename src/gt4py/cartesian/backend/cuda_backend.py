@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, ClassVar, Dict, Optional, Tuple, Type
+from typing import TYPE_CHECKING, Any, ClassVar, Dict, Tuple, Type
 
 from gt4py import storage as gt_storage
 from gt4py.cartesian.backend.base import CLIBackendMixin, disabled, register
@@ -147,13 +147,8 @@ class CudaBackend(BaseGTBackend, CLIBackendMixin):
     def generate(self) -> Type[StencilObject]:
         self.check_options(self.builder.options)
 
-        pyext_module_name: Optional[str]
-        pyext_file_path: Optional[str]
-
         # TODO(havogt) add bypass if computation has no effect
-        pyext_module_name, pyext_file_path = self.generate_extension()
+        self.generate_extension()
 
         # Generate and return the Python wrapper class
-        return self.make_module(
-            pyext_module_name=pyext_module_name, pyext_file_path=pyext_file_path
-        )
+        return self.make_module()

@@ -292,13 +292,13 @@ class BaseBackend(Backend):
                 stacklevel=2,
             )
 
-    def make_module(self, **kwargs: Any) -> Type[StencilObject]:
+    def make_module(self) -> Type[StencilObject]:
         build_info = self.builder.options.build_info
         if build_info is not None:
             start_time = time.perf_counter()
 
         file_path = self.builder.module_path
-        module_source = self.make_module_source(**kwargs)
+        module_source = self.make_module_source()
 
         if not self.builder.options._impl_opts.get("disable-code-generation", False):
             file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -312,15 +312,15 @@ class BaseBackend(Backend):
 
         return module
 
-    def make_module_source(self, *, args_data: Optional[ModuleData] = None, **kwargs: Any) -> str:
+    def make_module_source(self, *, args_data: Optional[ModuleData] = None) -> str:
         """Generate the module source code with or without stencil id."""
         args_data = args_data or make_args_data_from_gtir(self.builder.gtir_pipeline)
-        source = self.MODULE_GENERATOR_CLASS()(args_data, self.builder, **kwargs)
+        source = self.MODULE_GENERATOR_CLASS(self.builder)(args_data)
         return source
 
 
 class MakeModuleSourceCallable(Protocol):
-    def __call__(self, *, args_data: Optional[ModuleData] = None, **kwargs: Any) -> str: ...
+    def __call__(self, *, args_data: Optional[ModuleData] = None) -> str: ...
 
 
 class PurePythonBackendCLIMixin(CLIBackendMixin):
@@ -336,7 +336,7 @@ class PurePythonBackendCLIMixin(CLIBackendMixin):
 
     def generate_computation(self) -> Dict[str, Union[str, Dict]]:
         file_name = self.builder.module_path.name
-        source = self.make_module_source(ir=self.builder.gtir)
+        source = self.make_module_source()
         return {str(file_name): source}
 
     def generate_bindings(self, language_name: str) -> Dict[str, Union[str, Dict]]:

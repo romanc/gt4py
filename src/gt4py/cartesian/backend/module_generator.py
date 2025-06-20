@@ -121,12 +121,12 @@ class BaseModuleGenerator(abc.ABC):
 
     TEMPLATE_RESOURCE = "stencil_module.py.in"
 
-    _builder: Optional[StencilBuilder]
+    builder: StencilBuilder
     args_data: ModuleData
     template: jinja2.Template
 
-    def __init__(self, builder: Optional[StencilBuilder] = None):
-        self._builder = builder
+    def __init__(self, builder: StencilBuilder):
+        self.builder = builder
         self.args_data = ModuleData()
         self.template = jinja2.Template(
             importlib_resources.files("gt4py.cartesian.backend.templates")
@@ -134,17 +134,13 @@ class BaseModuleGenerator(abc.ABC):
             .read_text()
         )
 
-    def __call__(
-        self, args_data: ModuleData, builder: Optional[StencilBuilder] = None, **kwargs: Any
-    ) -> str:
+    def __call__(self, args_data: ModuleData) -> str:
         """
         Generate source code for a Python module containing a StencilObject.
 
         A possible reason for extending is processing additional kwargs,
         using a different template might require completely overriding.
         """
-        if builder:
-            self._builder = builder
         self.args_data = args_data
 
         module_source = self.template.render(
@@ -174,19 +170,6 @@ class BaseModuleGenerator(abc.ABC):
             )
 
         return module_source
-
-    @property
-    def builder(self) -> StencilBuilder:
-        """
-        Expose the builder reference.
-
-        Raises a runtime error if the builder reference is not initialized.
-        This is necessary because other parts of the public API depend on it before it is
-        guaranteed to be initialized.
-        """
-        if not self._builder:
-            raise RuntimeError("Builder attribute not initialized!")
-        return self._builder
 
     @property
     def backend_name(self) -> str:

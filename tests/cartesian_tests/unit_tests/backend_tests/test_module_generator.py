@@ -52,15 +52,9 @@ def sample_args_data():
 
 
 def test_uninitialized_builder(sample_builder, sample_args_data):
-    generator = SampleModuleGenerator()
-
-    # if builder not passed in constructor, trying to access it is guaranteed to raise
+    # builder is enforced to be passed as constructor argument now
     with pytest.raises(RuntimeError):
-        assert generator.builder
-
-    source = generator(args_data=sample_args_data, builder=sample_builder)
-    assert source
-    assert generator.builder
+        generator = SampleModuleGenerator()
 
 
 def test_initialized_builder(sample_builder, sample_args_data):

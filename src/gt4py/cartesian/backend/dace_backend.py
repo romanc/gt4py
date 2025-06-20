@@ -12,7 +12,7 @@ import copy
 import os
 import pathlib
 import re
-from typing import TYPE_CHECKING, Any, ClassVar, Dict, List, Optional, Set, Tuple, Type, Union
+from typing import TYPE_CHECKING, Any, ClassVar, Dict, List, Set, Tuple, Type, Union
 
 import dace
 import dace.data
@@ -799,16 +799,11 @@ class BaseDaceBackend(BaseGTBackend, CLIBackendMixin):
     def generate(self) -> Type[StencilObject]:
         self.check_options(self.builder.options)
 
-        pyext_module_name: Optional[str]
-        pyext_file_path: Optional[str]
-
         # TODO(havogt) add bypass if computation has no effect
-        pyext_module_name, pyext_file_path = self.generate_extension()
+        self.generate_extension()
 
         # Generate and return the Python wrapper class
-        return self.make_module(
-            pyext_module_name=pyext_module_name, pyext_file_path=pyext_file_path
-        )
+        return self.make_module()
 
 
 @register
