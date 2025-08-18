@@ -224,6 +224,35 @@ class TestInlinedExternals:
             )
 
 
+    def test_literal_precision(self):
+        def stencil(input_field: gtscript.Field[float], output_field: gtscript.Field[float]):
+            from __externals__ import my_int32, my_int64, my_float32, my_float64
+
+            with computation(PARALLEL), interval(...):
+                output_field = input_field + my_int32
+                output_field = output_field + my_int64
+                output_field = output_field + my_float32
+                output_field = output_field + my_float64
+
+        def_ir = parse_definition(
+            stencil,
+            name=inspect.stack()[0][3],
+            module=self.__class__.__name__,
+            externals={
+                "my_int32": gtscript.int32(42),
+                "my_int64": gtscript.int64(42),
+                "my_float32": gtscript.float32(42.0),
+                "my_float64": gtscript.float64(42.0),
+            },
+        )
+
+        assert def_ir.externals == {
+            "my_int32": np.int32(42),
+            "my_int64": np.int64(42),
+            "my_float32": np.float32(42.0),
+            "my_float64": np.float64(42.0),
+        }
+
 class TestFunction:
     def test_error_invalid(self):
         def func():
