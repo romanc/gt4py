@@ -53,7 +53,7 @@ if TYPE_CHECKING:
     from gt4py.cartesian.stencil_object import StencilObject
 
 
-def _specialize_transient_strides(
+def specialize_transient_strides(
     sdfg: SDFG, layout_info: layout.LayoutInfo, replacement_dictionary: dict[str, str] | None = None
 ) -> None:
     # Find transients in this SDFG to specialize.
@@ -77,7 +77,7 @@ def _specialize_transient_strides(
         for node in state.nodes():
             if isinstance(node, nodes.NestedSDFG):
                 # Recursively replace strides in nested SDFGs
-                _specialize_transient_strides(node.sdfg, layout_info, replacement_dictionary)
+                specialize_transient_strides(node.sdfg, layout_info, replacement_dictionary)
     for k in replacement_dictionary.keys():
         if k in sdfg.symbols:
             sdfg.remove_symbol(k)
@@ -176,6 +176,9 @@ def _sdfg_add_arrays_and_edges(
 
 
 def _sdfg_specialize_symbols(wrapper_sdfg: SDFG, domain: tuple[int, ...]) -> None:
+    """Idea: specialize symbols in array sizes, but don't specialize loop bounds (because
+    we have this running theory that otherwise the compiler would just unroll all I/J/K-
+    loops for bounds like 12x12x79...)"""
     ival, jval, kval = domain[0], domain[1], domain[2]
     for sdfg in wrapper_sdfg.all_sdfgs_recursive():
         if sdfg.parent_nsdfg_node is not None:
@@ -183,21 +186,12 @@ def _sdfg_specialize_symbols(wrapper_sdfg: SDFG, domain: tuple[int, ...]) -> Non
 
             if "__I" in symmap:
                 ival = symmap["__I"]
-                del symmap["__I"]
             if "__J" in symmap:
                 jval = symmap["__J"]
-                del symmap["__J"]
             if "__K" in symmap:
                 kval = symmap["__K"]
-                del symmap["__K"]
 
-        sdfg.replace_dict({"__I": ival, "__J": jval, "__K": kval})
-        if "__I" in sdfg.symbols:
-            sdfg.remove_symbol("__I")
-        if "__J" in sdfg.symbols:
-            sdfg.remove_symbol("__J")
-        if "__K" in sdfg.symbols:
-            sdfg.remove_symbol("__K")
+        sdfg.replace_dict({"__I": ival, "__J": jval, "__K": kval}, replace_in_graph=False)
 
         for val in ival, jval, kval:
             sym = symbolic.pystr_to_symbolic(val)
@@ -279,7 +273,7 @@ def freeze_origin_domain_sdfg(
     inline_sdfgs(wrapper_sdfg)
 
     _sdfg_specialize_symbols(wrapper_sdfg, domain)
-    _specialize_transient_strides(wrapper_sdfg, layout_info)
+    specialize_transient_strides(wrapper_sdfg, layout_info)
 
     for _, _, array in wrapper_sdfg.arrays_recursive():
         if array.transient:
@@ -431,7 +425,7 @@ class DaCeExtGenerator(BackendCodegen):
         manager = SDFGManager(self.backend.builder)
 
         sdfg = manager.sdfg_via_schedule_tree()
-        _specialize_transient_strides(
+        specialize_transient_strides(
             sdfg,
             self.backend.storage_info,
         )

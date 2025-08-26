@@ -27,6 +27,9 @@ class DaCeLazyStencil(LazyStencil, SDFGConvertible):
     def __init__(self, builder: StencilBuilder):
         if "dace" not in builder.backend.name:
             raise ValueError("Trying to build a DaCeLazyStencil for non-dace backend.")
+
+        self._domain: None | Tuple = None
+
         super().__init__(builder=builder)
 
     @property
@@ -59,7 +62,9 @@ class DaCeLazyStencil(LazyStencil, SDFGConvertible):
             field_info=args_data.field_info,
             **kwargs,
         )
+        self._domain = norm_kwargs["domain"]
         sdfg = sdfg_manager.frozen_sdfg(origin=norm_kwargs["origin"], domain=norm_kwargs["domain"])
+
         return add_optional_fields(
             sdfg,
             field_info=args_data.field_info,
