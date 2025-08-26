@@ -6,6 +6,7 @@
 # Please, refer to the LICENSE file in the root directory.
 # SPDX-License-Identifier: BSD-3-Clause
 
+import enum
 from typing import Any, List, TypeAlias
 
 from dace import data, dtypes, symbolic
@@ -36,6 +37,11 @@ DEFAULT_MAP_SCHEDULE = {
 """Default kernel target per device type."""
 
 
+class HorizontalRegionsImplStrategy(enum.Enum):
+    REGIONS_AS_IF = enum.auto()
+    REGIONS_AS_LOOP = enum.auto()
+
+
 class OIRToTreeIR(eve.NodeVisitor):
     """
     Translate the GT4Py OIR into a Dace-centric TreeIR.
@@ -48,7 +54,11 @@ class OIRToTreeIR(eve.NodeVisitor):
     work to the OIRToTasklet visitor.
     """
 
-    def __init__(self, builder: StencilBuilder) -> None:
+    def __init__(
+        self,
+        builder: StencilBuilder,
+        regions_impl_strategy: HorizontalRegionsImplStrategy = HorizontalRegionsImplStrategy.REGIONS_AS_LOOP,
+    ) -> None:
         device_type_translate = {
             "CPU": dtypes.DeviceType.CPU,
             "GPU": dtypes.DeviceType.GPU,
@@ -62,6 +72,7 @@ class OIRToTreeIR(eve.NodeVisitor):
         self._api_signature = builder.gtir.api_signature
         self._k_bounds = compute_k_boundary(builder.gtir)
         self._vloop_sections = 0
+        self._regions_impl_strategy: HorizontalRegionsImplStrategy = regions_impl_strategy
 
     def visit_CodeBlock(self, node: oir.CodeBlock, ctx: tir.Context) -> None:
         dace_tasklet, inputs, outputs = oir_to_tasklet.OIRToTasklet().visit_CodeBlock(
@@ -135,26 +146,71 @@ class OIRToTreeIR(eve.NodeVisitor):
         axis_end_i = f"({tir.Axis.I.domain_dace_symbol()})  + ({block_extent[0][1]})"
         axis_end_j = f"({tir.Axis.J.domain_dace_symbol()})  + ({block_extent[1][1]})"
 
-        loop = tir.HorizontalLoop(
-            bounds_i=tir.Bounds(start=axis_start_i, end=axis_end_i),
-            bounds_j=tir.Bounds(start=axis_start_j, end=axis_end_j),
-            schedule=DEFAULT_MAP_SCHEDULE[self._device_type],
-            children=[],
-            parent=ctx.current_scope,
-        )
+        groups = self._group_statements(node)
 
-        with loop.scope(ctx):
-            # Push local scalars to the tree repository
-            for local_scalar in node.declarations:
-                ctx.root.containers[local_scalar.name] = data.Scalar(
-                    dtype=utils.data_type_to_dace_typeclass(local_scalar.dtype),
-                    transient=True,
-                    storage=dtypes.StorageType.Register,
-                    debuginfo=utils.get_dace_debuginfo(local_scalar),
+        # TODO move to function
+        groups_by_loop: list = []
+        if self._regions_impl_strategy == HorizontalRegionsImplStrategy.REGIONS_AS_LOOP:
+            current_loop_group: list = []  # TODO: better type
+            for group in groups:
+                if isinstance(group, oir.HorizontalRestriction):
+                    if len(current_loop_group) > 0:
+                        groups_by_loop.append(current_loop_group)
+                        current_loop_group = []
+                    groups_by_loop.append(group)
+                else:
+                    current_loop_group.append(group)
+            if len(current_loop_group) > 0:
+                groups_by_loop.append(current_loop_group)
+        else:
+            groups_by_loop = [groups]
+
+        for group in groups_by_loop:
+            if isinstance(group, oir.HorizontalRestriction):
+                assert self._regions_impl_strategy == HorizontalRegionsImplStrategy.REGIONS_AS_LOOP
+                i_start, i_end, j_start, j_end = self.visit(
+                    group.mask,
+                    ctx=ctx,
+                    axis_start_i=axis_start_i,
+                    axis_end_i=axis_end_i,
+                    axis_start_j=axis_start_j,
+                    axis_end_j=axis_end_j,
                 )
+            else:
+                i_start = None
+                i_end = None
+                j_start = None
+                j_end = None
 
-            groups = self._group_statements(node)
-            self.visit(groups, ctx=ctx)
+            if i_start is None:
+                i_start = axis_start_i
+            if i_end is None:
+                i_end = axis_end_i
+            if j_start is None:
+                j_start = axis_start_j
+            if j_end is None:
+                j_end = axis_end_j
+
+            loop = tir.HorizontalLoop(
+                bounds_i=tir.Bounds(start=i_start, end=i_end),
+                bounds_j=tir.Bounds(start=j_start, end=j_end),
+                schedule=DEFAULT_MAP_SCHEDULE[self._device_type],
+                children=[],
+                parent=ctx.current_scope,
+            )
+
+            with loop.scope(ctx):
+                # Push local scalars to the tree repository
+                for local_scalar in node.declarations:
+                    ctx.root.containers[local_scalar.name] = data.Scalar(
+                        dtype=utils.data_type_to_dace_typeclass(local_scalar.dtype),
+                        transient=True,
+                        storage=dtypes.StorageType.Register,
+                        debuginfo=utils.get_dace_debuginfo(local_scalar),
+                    )
+
+                loop_body = group.body if isinstance(group, oir.HorizontalRestriction) else group
+                self.visit(loop_body, ctx=ctx)
 
     def visit_MaskStmt(self, node: oir.MaskStmt, ctx: tir.Context) -> None:
         condition_name, _ = self._insert_evaluation_tasklet(node, ctx)
@@ -171,43 +227,69 @@ class OIRToTreeIR(eve.NodeVisitor):
         self, node: oir.HorizontalRestriction, ctx: tir.Context
     ) -> None:
         """Translate `region` concept into If control flow in TreeIR."""
-        condition_code = self.visit(node.mask, ctx=ctx)
+        if self._regions_impl_strategy != HorizontalRegionsImplStrategy.REGIONS_AS_IF:
+            raise ValueError("this is unexpected")
+
+        axis_start_i = "0"
+        axis_end_i = tir.Axis.I.domain_symbol()
+        axis_start_j = "0"
+        axis_end_j = tir.Axis.J.domain_symbol()
+        i_start, i_end, j_start, j_end = self.visit(
+            node.mask,
+            ctx=ctx,
+            axis_start_i=axis_start_i,
+            axis_end_i=axis_end_i,
+            axis_start_j=axis_start_j,
+            axis_end_j=axis_end_j,
+        )
+
+        loop_i = tir.Axis.I.iteration_symbol()
+        loop_j = tir.Axis.J.iteration_symbol()
+        conditions: list[str] = []
+
+        if i_start is not None:
+            conditions.append(f"{loop_i} >= {i_start}")
+        if i_end is not None:
+            conditions.append(f"{loop_i} < {i_end}")
+        if j_start is not None:
+            conditions.append(f"{loop_j} >= {j_start}")
+        if j_end is not None:
+            conditions.append(f"{loop_j} < {j_end}")
+
         if_else = tir.IfElse(
-            if_condition_code=condition_code, children=[], parent=ctx.current_scope
+            if_condition_code=" and ".join(conditions), children=[], parent=ctx.current_scope
         )
 
         with if_else.scope(ctx):
             groups = self._group_statements(node)
             self.visit(groups, ctx=ctx)
 
-    def visit_HorizontalMask(self, node: common.HorizontalMask, ctx: tir.Context) -> str:
-        loop_i = tir.Axis.I.iteration_symbol()
-        loop_j = tir.Axis.J.iteration_symbol()
+    def visit_HorizontalMask(
+        self,
+        node: common.HorizontalMask,
+        ctx: tir.Context,
+        axis_start_i: str,
+        axis_end_i: str,
+        axis_start_j: str,
+        axis_end_j: str,
+    ) -> tuple[str | None, str | None, str | None, str | None]:
+        """Returns a 4-tuple (i_start, i_end, j_start, j_end)"""
 
-        axis_start_i = "0"
-        axis_end_i = tir.Axis.I.domain_symbol()
-        axis_start_j = "0"
-        axis_end_j = tir.Axis.J.domain_symbol()
+        i_start = None
+        i_end = None
+        j_start = None
+        j_end = None
 
-        conditions: list[str] = []
         if node.i.start is not None:
-            conditions.append(
-                f"{loop_i} >= {self.visit(node.i.start, axis_start=axis_start_i, axis_end=axis_end_i)}"
-            )
+            i_start = self.visit(node.i.start, axis_start=axis_start_i, axis_end=axis_end_i)
         if node.i.end is not None:
-            conditions.append(
-                f"{loop_i} < {self.visit(node.i.end, axis_start=axis_start_i, axis_end=axis_end_i)}"
-            )
+            i_end = self.visit(node.i.end, axis_start=axis_start_i, axis_end=axis_end_i)
         if node.j.start is not None:
-            conditions.append(
-                f"{loop_j} >= {self.visit(node.j.start, axis_start=axis_start_j, axis_end=axis_end_j)}"
-            )
+            j_start = self.visit(node.j.start, axis_start=axis_start_j, axis_end=axis_end_j)
         if node.j.end is not None:
-            conditions.append(
-                f"{loop_j} < {self.visit(node.j.end, axis_start=axis_start_j, axis_end=axis_end_j)}"
-            )
+            j_end = self.visit(node.j.end, axis_start=axis_start_j, axis_end=axis_end_j)
 
-        return " and ".join(conditions)
+        return (i_start, i_end, j_start, j_end)
 
     def visit_While(self, node: oir.While, ctx: tir.Context) -> None:
         condition_name, assignment = self._insert_evaluation_tasklet(node, ctx)
