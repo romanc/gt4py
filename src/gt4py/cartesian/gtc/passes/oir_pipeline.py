@@ -27,10 +27,6 @@ from gt4py.cartesian.gtc.passes.oir_optimizations.pruning import (
     NoFieldAccessPruning,
     UnreachableStmtPruning,
 )
-from gt4py.cartesian.gtc.passes.oir_optimizations.temporaries import (
-    LocalTemporariesToScalars,
-    WriteBeforeReadTemporariesToScalars,
-)
 from gt4py.cartesian.gtc.passes.oir_optimizations.vertical_loop_merging import AdjacentLoopMerging
 
 
@@ -70,8 +66,9 @@ class DefaultPipeline(OirPipeline):
             AdjacentLoopMerging,
             HorizontalExecutionMerging,
             OnTheFlyMerging,
-            LocalTemporariesToScalars,
-            WriteBeforeReadTemporariesToScalars,
+            # Temp pause in favor of regions as loops
+            # LocalTemporariesToScalars,
+            # WriteBeforeReadTemporariesToScalars,
             MaskStmtMerging,
             MaskInlining,
             UnreachableStmtPruning,
