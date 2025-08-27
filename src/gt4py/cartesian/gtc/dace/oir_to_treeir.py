@@ -171,10 +171,10 @@ class OIRToTreeIR(eve.NodeVisitor):
                 i_start, i_end, j_start, j_end = self.visit(
                     group.mask,
                     ctx=ctx,
-                    axis_start_i=axis_start_i,
-                    axis_end_i=axis_end_i,
-                    axis_start_j=axis_start_j,
-                    axis_end_j=axis_end_j,
+                    axis_start_i="0",
+                    axis_end_i=tir.Axis.I.domain_symbol(),
+                    axis_start_j="0",
+                    axis_end_j=tir.Axis.J.domain_symbol(),
                 )
             else:
                 i_start = None
@@ -209,7 +209,11 @@ class OIRToTreeIR(eve.NodeVisitor):
                         debuginfo=utils.get_dace_debuginfo(local_scalar),
                     )
 
-                loop_body = group.body if isinstance(group, oir.HorizontalRestriction) else group
+                loop_body = (
+                    self._group_statements(group)
+                    if isinstance(group, oir.HorizontalRestriction)
+                    else group
+                )
                 self.visit(loop_body, ctx=ctx)
 
     def visit_MaskStmt(self, node: oir.MaskStmt, ctx: tir.Context) -> None:
