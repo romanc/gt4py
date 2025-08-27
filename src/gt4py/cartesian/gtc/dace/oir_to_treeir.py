@@ -7,6 +7,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 import enum
+import warnings
 from typing import Any, List, TypeAlias
 
 from dace import data, dtypes, symbolic
@@ -232,7 +233,10 @@ class OIRToTreeIR(eve.NodeVisitor):
     ) -> None:
         """Translate `region` concept into If control flow in TreeIR."""
         if self._regions_impl_strategy != HorizontalRegionsImplStrategy.REGIONS_AS_IF:
-            raise ValueError("this is unexpected")
+            warnings.warn(
+                "Translating region to if statement because it as nested in other control flow.",
+                stacklevel=2,
+            )
 
         axis_start_i = "0"
         axis_end_i = tir.Axis.I.domain_symbol()
