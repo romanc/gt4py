@@ -169,13 +169,25 @@ class OIRToTreeIR(eve.NodeVisitor):
         for group in groups_by_loop:
             if isinstance(group, oir.HorizontalRestriction):
                 assert self._regions_impl_strategy == HorizontalRegionsImplStrategy.REGIONS_AS_LOOP
+                ec = oir_utils.StencilExtentComputer(
+                    centered_extent=True, ignore_horizontal_mask=True
+                )
+                tmp_ctx = oir_utils.StencilExtentComputer.Context()
+                tmp_node = oir.HorizontalExecution(body=[group], declarations=[])
+                ec.visit_HorizontalExecution(tmp_node, ctx=tmp_ctx)
+
+                tmp_extent = tmp_ctx.blocks[id(tmp_node)]
+
+                print(tmp_extent)
+                print(block_extent)
+
                 i_start, i_end, j_start, j_end = self.visit(
                     group.mask,
                     ctx=ctx,
-                    axis_start_i="0",
-                    axis_end_i=tir.Axis.I.domain_symbol(),
-                    axis_start_j="0",
-                    axis_end_j=tir.Axis.J.domain_symbol(),
+                    axis_start_i=f"{tmp_extent[0][0]}",
+                    axis_end_i=f"({tir.Axis.I.domain_dace_symbol()})  + ({tmp_extent[0][1]})",
+                    axis_start_j=f"{tmp_extent[1][0]}",
+                    axis_end_j=f"({tir.Axis.J.domain_dace_symbol()})  + ({tmp_extent[1][1]})",
                 )
             else:
                 i_start = None
