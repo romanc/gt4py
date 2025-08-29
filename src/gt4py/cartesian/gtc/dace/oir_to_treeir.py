@@ -284,7 +284,18 @@ class OIRToTreeIR(eve.NodeVisitor):
 
     def visit_VerticalLoop(self, node: oir.VerticalLoop, ctx: tir.Context) -> None:
         if node.caches:
-            raise NotImplementedError("Caches are not supported in this prototype.")
+            for cache in node.caches:
+                if not isinstance(cache, oir.IJCache):
+                    # keep being explicit what we support and what not
+                    raise NotImplementedError("Only IJCaches are not supported in this prototype.")
+
+                # basically everything is done by removing the k-dimension (in oir_passes.FixIJCacheDimensions)
+                # here we only make sure that we have persistent thread local memory (on CPU)
+                ctx.root.containers[cache.name].lifetime = dtypes.AllocationLifetime.Persistent
+                ctx.root.containers[cache.name].storage = dtypes.StorageType.CPU_ThreadLocal
+
+                # TODO
+                # block-local shared memory on GPU
 
         self.visit(node.sections, ctx=ctx, loop_order=node.loop_order)
 

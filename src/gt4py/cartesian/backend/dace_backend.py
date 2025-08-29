@@ -34,6 +34,7 @@ from gt4py.cartesian.backend.gtc_common import (
 )
 from gt4py.cartesian.backend.module_generator import make_args_data_from_gtir
 from gt4py.cartesian.gtc import gtir
+from gt4py.cartesian.gtc.dace import oir_passes
 from gt4py.cartesian.gtc.dace.oir_to_treeir import OIRToTreeIR
 from gt4py.cartesian.gtc.dace.treeir_to_stree import TreeIRToScheduleTree
 from gt4py.cartesian.gtc.dace.utils import array_dimensions, replace_strides
@@ -327,12 +328,12 @@ class SDFGManager:
         oir_pipeline = copy.deepcopy(oir_pipeline)
         oir_pipeline.skip.extend(
             [
-                caches.IJCacheDetection,
                 caches.KCacheDetection,
                 caches.PruneKCacheFills,
                 caches.PruneKCacheFlushes,
             ]
         )
+        oir_pipeline.add_steps.extend([oir_passes.FixIJCacheDimensions])
         oir = oir_pipeline.run(oir)
 
         tir = OIRToTreeIR(self.builder).visit(oir)
