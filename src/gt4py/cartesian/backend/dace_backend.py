@@ -244,7 +244,18 @@ def freeze_origin_domain_sdfg(
     inner_sdfg = copy.deepcopy(inner_sdfg_unfrozen)
 
     wrapper_sdfg = SDFG("frozen_" + inner_sdfg.name)
-    state = wrapper_sdfg.add_state("frozen_" + inner_sdfg.name + "_state")
+    start_block = wrapper_sdfg.add_state(
+        "frozen_" + inner_sdfg.name + "_start", is_start_block=True
+    )
+    state = wrapper_sdfg.add_state_after(
+        start_block,
+        "frozen_" + inner_sdfg.name + "_state",
+        assignments={
+            "__I": domain[0],
+            "__J": domain[1],
+            "__K": domain[2],
+        },
+    )
 
     inputs = set()
     outputs = set()
@@ -278,7 +289,6 @@ def freeze_origin_domain_sdfg(
     # Try to inline wrapped SDFG before symbols are specialized to avoid extra views
     inline_sdfgs(wrapper_sdfg)
 
-    _sdfg_specialize_symbols(wrapper_sdfg, domain)
     _specialize_transient_strides(wrapper_sdfg, layout_info)
 
     for _, _, array in wrapper_sdfg.arrays_recursive():
