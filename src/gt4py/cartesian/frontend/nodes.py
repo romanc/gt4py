@@ -73,7 +73,7 @@ storing a reference to the piece of source code which originated the node.
 
     Axis(name: str)
 
-    Domain(parallel_axes: List[Axis], [sequential_axis: Axis])
+    Domain(parallel_axes: list[Axis], [sequential_axis: Axis])
         # LatLonGrids -> parallel_axes: ["I", "J"], sequential_axis: "K"
 
     Literal     = ScalarLiteral(value: Any (should match DataType), data_type: DataType)
@@ -83,7 +83,7 @@ storing a reference to the piece of source code which originated the node.
                 | FieldRef(name: str, offset: Dict[str, int | Expr])
                 # Horizontal indices must be ints
 
-    NativeFuncCall(func: NativeFunction, args: List[Expr], data_type: DataType)
+    NativeFuncCall(func: NativeFunction, args: list[Expr], data_type: DataType)
 
     Cast(expr: Expr, data_type: DataType)
 
@@ -97,12 +97,12 @@ storing a reference to the piece of source code which originated the node.
                     | BinOpExpr(op: BinaryOperator, lhs: Expr, rhs: Expr)
                     | TernaryOpExpr(condition: Expr, then_expr: Expr, else_expr: Expr)
 
-    Decl        = FieldDecl(name: str, data_type: DataType, axes: List[str],
+    Decl        = FieldDecl(name: str, data_type: DataType, axes: list[str],
                             is_api: bool, layout_id: str)
                 | VarDecl(name: str, data_type: DataType, length: int,
                           is_api: bool, [init: Literal])
 
-    BlockStmt(stmts: List[Statement])
+    BlockStmt(stmts: list[Statement])
 
     Statement   = Decl
                 | Assign(target: Ref, value: Expr)
@@ -127,10 +127,10 @@ storing a reference to the piece of source code which originated the node.
 
     StencilDefinition(name: str,
                       domain: Domain,
-                      api_signature: List[ArgumentInfo],
-                      api_fields: List[FieldDecl],
-                      parameters: List[VarDecl],
-                      computations: List[ComputationBlock],
+                      api_signature: list[ArgumentInfo],
+                      api_fields: list[FieldDecl],
+                      parameters: list[VarDecl],
+                      computations: list[ComputationBlock],
                       [externals: Dict[str, Any], sources: Dict[str, str]])
 """
 
@@ -139,7 +139,7 @@ from __future__ import annotations
 import enum
 import operator
 import sys
-from typing import List, Optional, Sequence
+from collections.abc import Sequence
 
 import numpy as np
 
@@ -383,7 +383,7 @@ class FieldRef(Ref):
 
     @classmethod
     def at_center(
-        cls, name: str, axes: Sequence[str], data_index: Optional[List[int]] = None, loc=None
+        cls, name: str, axes: Sequence[str], data_index: list[int] | None = None, loc=None
     ):
         return cls(
             name=name, offset={axis: 0 for axis in axes}, data_index=data_index or [], loc=loc

@@ -15,20 +15,8 @@ import numbers
 import textwrap
 import time
 import types
-from typing import (
-    Any,
-    Callable,
-    Dict,
-    Final,
-    List,
-    Literal,
-    Optional,
-    Sequence,
-    Set,
-    Tuple,
-    Type,
-    Union,
-)
+from collections.abc import Callable, Sequence
+from typing import Any, Final, Literal
 
 import numpy as np
 
@@ -54,11 +42,11 @@ class AssertionChecker(ast.NodeTransformer):
     """Check assertions and remove from the AST for further parsing."""
 
     @classmethod
-    def apply(cls, func_node: ast.FunctionDef, context: Dict[str, Any], source: str):
+    def apply(cls, func_node: ast.FunctionDef, context: dict[str, Any], source: str):
         checker = cls(context, source)
         checker.visit(func_node)
 
-    def __init__(self, context: Dict[str, Any], source: str):
+    def __init__(self, context: dict[str, Any], source: str):
         self.context = context
         self.source = source
 
@@ -76,7 +64,7 @@ class AssertionChecker(ast.NodeTransformer):
 
         return None
 
-    def _process_call(self, node: ast.Call) -> Optional[ast.Call]:
+    def _process_call(self, node: ast.Call) -> ast.Call | None:
         name = gt_meta.get_qualified_name_from_node(node.func)
         if name != "compile_assert":
             return node
@@ -87,7 +75,7 @@ class AssertionChecker(ast.NodeTransformer):
             )
         return self._process_assertion(node.args[0])
 
-    def visit_Expr(self, node: ast.Expr) -> Optional[ast.AST]:
+    def visit_Expr(self, node: ast.Expr) -> ast.AST | None:
         if isinstance(node.value, ast.Call):
             ret = self._process_call(node.value)
             return ast.Expr(value=ret) if ret else None
@@ -105,9 +93,9 @@ class AxisIntervalParser(gt_meta.ASTPass):
     @classmethod
     def apply(
         cls,
-        node: Union[ast.Ellipsis, ast.Slice, ast.Subscript, ast.Constant],
+        node: ast.Ellipsis | ast.Slice | ast.Subscript | ast.Constant,
         axis_name: str,
-        loc: Optional[nodes.Location] = None,
+        loc: nodes.Location | None = None,
     ) -> nodes.AxisInterval:
         parser = cls(axis_name, loc)
 
@@ -144,7 +132,7 @@ class AxisIntervalParser(gt_meta.ASTPass):
 
         return nodes.AxisInterval(start=start, end=end, loc=loc)
 
-    def __init__(self, axis_name: str, loc: Optional[nodes.Location] = None):
+    def __init__(self, axis_name: str, loc: nodes.Location | None = None):
         self.axis_name = axis_name
         self.loc = loc
 
@@ -166,7 +154,7 @@ class AxisIntervalParser(gt_meta.ASTPass):
 
     def _make_axis_bound(
         self,
-        value: Union[int, None, gtscript.AxisIndex, nodes.AxisBound, nodes.VarRef],
+        value: int | None | gtscript.AxisIndex | nodes.AxisBound | nodes.VarRef,
         endpt: nodes.LevelMarker,
     ) -> nodes.AxisBound:
         if isinstance(value, nodes.AxisBound):
@@ -197,7 +185,7 @@ class AxisIntervalParser(gt_meta.ASTPass):
     def visit_Name(self, node: ast.Name) -> nodes.VarRef:
         return nodes.VarRef(name=node.id, loc=nodes.Location.from_ast_node(node))
 
-    def visit_Constant(self, node: ast.Constant) -> Union[int, gtscript.AxisIndex, None]:
+    def visit_Constant(self, node: ast.Constant) -> int | gtscript.AxisIndex | None:
         if isinstance(node.value, gtscript.AxisIndex):
             return node.value
         if isinstance(node.value, numbers.Number):
@@ -210,7 +198,7 @@ class AxisIntervalParser(gt_meta.ASTPass):
             loc=self.loc,
         )
 
-    def visit_BinOp(self, node: ast.BinOp) -> Union[gtscript.AxisIndex, nodes.AxisBound, int]:
+    def visit_BinOp(self, node: ast.BinOp) -> gtscript.AxisIndex | nodes.AxisBound | int:
         left = self.visit(node.left)
         right = self.visit(node.right)
 
@@ -361,13 +349,13 @@ class CallInliner(ast.NodeTransformer):
 
     @classmethod
     def apply(
-        cls, func_node: ast.FunctionDef, context: dict, *, call_stack: Optional[Set[str]] = None
+        cls, func_node: ast.FunctionDef, context: dict, *, call_stack: set[str] | None = None
     ):
         inliner = cls(context, call_stack=call_stack or set())
         inliner(func_node)
         return inliner.all_skip_names
 
-    def __init__(self, context: dict, call_stack: Optional[Set[str]] = None):
+    def __init__(self, context: dict, call_stack: set[str] | None = None):
         self.context = context
         self.current_block = None
         self.call_stack = call_stack
@@ -602,10 +590,10 @@ class CallInliner(ast.NodeTransformer):
 
 class CompiledIfInliner(ast.NodeTransformer):
     @classmethod
-    def apply(cls, ast_object: ast.AST, context: Dict[str, Any]):
+    def apply(cls, ast_object: ast.AST, context: dict[str, Any]):
         cls(context).visit(ast_object)
 
-    def __init__(self, context: Dict[str, Any]):
+    def __init__(self, context: dict[str, Any]):
         self.context = context
 
     def visit_If(self, node: ast.If):
@@ -630,8 +618,8 @@ class CompiledIfInliner(ast.NodeTransformer):
 
 
 def _make_temp_decls(
-    descriptors: Dict[str, gtscript._FieldDescriptor],
-) -> Dict[str, nodes.FieldDecl]:
+    descriptors: dict[str, gtscript._FieldDescriptor],
+) -> dict[str, nodes.FieldDecl]:
     return {
         name: nodes.FieldDecl(
             name=name,
@@ -645,12 +633,12 @@ def _make_temp_decls(
 
 
 def _make_init_computations(
-    temp_decls: Dict[str, nodes.FieldDecl], init_values: Dict[str, Any], func_node: ast.AST
-) -> List[nodes.ComputationBlock]:
+    temp_decls: dict[str, nodes.FieldDecl], init_values: dict[str, Any], func_node: ast.AST
+) -> list[nodes.ComputationBlock]:
     if not temp_decls:
         return []
 
-    stmts: List[nodes.Assign] = []
+    stmts: list[nodes.Assign] = []
     for name in init_values:
         decl = temp_decls[name]
         stmts.append(decl)
@@ -685,8 +673,8 @@ def _make_init_computations(
     ]
 
 
-def _find_accesses_with_offsets(node: nodes.Node) -> Set[str]:
-    names: Set[str] = set()
+def _find_accesses_with_offsets(node: nodes.Node) -> set[str]:
+    names: set[str] = set()
 
     class FindRefs(node_util.IRNodeVisitor):
         def visit_FieldRef(self, node: nodes.FieldRef) -> None:
@@ -746,8 +734,8 @@ class IRMaker(ast.NodeVisitor):
         *,
         domain: nodes.Domain,
         options: gt_definitions.BuildOptions,
-        temp_decls: Optional[Dict[str, nodes.FieldDecl]] = None,
-        dtypes: Optional[Dict[Type | str, Type]] = None,
+        temp_decls: dict[str, nodes.FieldDecl] | None = None,
+        dtypes: dict[type | str, type] | None = None,
     ):
         fields = fields or {}
         parameters = parameters or {}
@@ -770,7 +758,7 @@ class IRMaker(ast.NodeVisitor):
         self.iteration_order = None
         self.decls_stack = []
         self.parsing_horizontal_region = False
-        self.written_vars: Set[str] = set()
+        self.written_vars: set[str] = set()
         self.dtypes = dtypes
         self.python_symbol_to_ir_op = {
             "abs": nodes.NativeFunction.ABS,
@@ -867,7 +855,7 @@ class IRMaker(ast.NodeVisitor):
     def _is_known(self, name: str):
         return self._is_field(name) or self._is_parameter(name) or self._is_local_symbol(name)
 
-    def _are_blocks_sorted(self, compute_blocks: List[nodes.ComputationBlock]):
+    def _are_blocks_sorted(self, compute_blocks: list[nodes.ComputationBlock]):
         def sort_blocks_key(comp_block):
             start = comp_block.interval.start
             assert isinstance(start.level, nodes.LevelMarker)
@@ -897,7 +885,7 @@ class IRMaker(ast.NodeVisitor):
         # if sorting didn't change anything it was already sorted
         return compute_blocks == compute_blocks_sorted
 
-    def _parse_region_intervals(self, node: ast.Tuple) -> Dict[str, nodes.AxisInterval]:
+    def _parse_region_intervals(self, node: ast.Tuple) -> dict[str, nodes.AxisInterval]:
         # Since Python 3.9: directly returns a Tuple for region[0, 1]
         list_of_exprs = [axis_node for axis_node in node.elts]
         axes_names = [axis.name for axis in self.domain.parallel_axes]
@@ -908,7 +896,7 @@ class IRMaker(ast.NodeVisitor):
 
     def _visit_with_horizontal(
         self, node: ast.withitem, loc: nodes.Location
-    ) -> List[Dict[str, nodes.AxisInterval]]:
+    ) -> list[dict[str, nodes.AxisInterval]]:
         syntax_error = GTScriptSyntaxError(
             f"Invalid 'with' statement at line {loc.line} (column {loc.column})", loc=loc
         )
@@ -921,7 +909,7 @@ class IRMaker(ast.NodeVisitor):
 
         return [self._parse_region_intervals(arg.slice) for arg in call_args]
 
-    def _are_intervals_nonoverlapping(self, compute_blocks: List[nodes.ComputationBlock]):
+    def _are_intervals_nonoverlapping(self, compute_blocks: list[nodes.ComputationBlock]):
         for i, block in enumerate(compute_blocks[1:]):
             other = compute_blocks[i]
             if not block.interval.disjoint_from(other.interval):
@@ -1057,7 +1045,7 @@ class IRMaker(ast.NodeVisitor):
     # -- Literal nodes --
     def visit_Constant(
         self, node: ast.Constant
-    ) -> Union[nodes.ScalarLiteral, nodes.BuiltinLiteral, nodes.Cast]:
+    ) -> nodes.ScalarLiteral | nodes.BuiltinLiteral | nodes.Cast:
         value = node.value
         if value is None:
             return nodes.BuiltinLiteral(value=nodes.Builtin.from_value(value))
@@ -1143,8 +1131,8 @@ class IRMaker(ast.NodeVisitor):
         return index
 
     def _eval_new_spatial_index(
-        self, index_nodes: Sequence[nodes.Expr], field_axes: Optional[Set[Literal["I", "J", "K"]]]
-    ) -> List[int]:
+        self, index_nodes: Sequence[nodes.Expr], field_axes: set[Literal["I", "J", "K"]] | None
+    ) -> list[int]:
         index_dict = {}
         all_spatial_axes = ("I", "J", "K")
         last_index = -1
@@ -1188,7 +1176,7 @@ class IRMaker(ast.NodeVisitor):
         return [index_dict.get(axis, 0) for axis in ("I", "J", "K") if axis in field_axes]
 
     def _eval_index(
-        self, node: ast.Subscript, field_axes: Optional[Set[Literal["I", "J", "K"]]] = None
+        self, node: ast.Subscript, field_axes: set[Literal["I", "J", "K"]] | None = None
     ) -> list[int] | nodes.AbsoluteKIndex | None:
         tuple_or_expr = node.slice.value if isinstance(node.slice, ast.Index) else node.slice
         index_nodes = gt_utils.listify(
@@ -1563,8 +1551,8 @@ class IRMaker(ast.NodeVisitor):
 
     # -- Statement nodes --
     def _parse_assign_target(
-        self, target_node: Union[ast.Subscript, ast.Name]
-    ) -> Tuple[str, Optional[List[int]], Optional[List[int]]]:
+        self, target_node: ast.Subscript | ast.Name
+    ) -> tuple[str, list[int] | None, list[int] | None]:
         invalid_target = GTScriptSyntaxError(
             message="Invalid target in assignment.", loc=target_node
         )
@@ -1613,9 +1601,9 @@ class IRMaker(ast.NodeVisitor):
 
     def _resolve_assign(
         self,
-        node: Union[ast.AnnAssign, ast.Assign],
-        targets: List[Any],
-        target_annotation: Optional[Any] = None,
+        node: ast.AnnAssign | ast.Assign,
+        targets: list,
+        target_annotation: Any | None = None,
     ) -> list:
         result = []
 
@@ -1838,7 +1826,7 @@ class IRMaker(ast.NodeVisitor):
             f"{error_message}: Mixing nested `with` blocks and statements is not allowed."
         )
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> List[nodes.ComputationBlock]:
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> list[nodes.ComputationBlock]:
         self.stencil_name = node.name
         blocks = []
         for stmt in filter(lambda s: not isinstance(s, ast.AnnAssign), node.body):
@@ -2008,8 +1996,8 @@ class GTScriptParser(ast.NodeVisitor):
             )
 
         # Gather temporary
-        temp_annotations: Dict[str, gtscript._FieldDescriptor] = {}
-        temp_init_values: Dict[str, numbers.Number] = {}
+        temp_annotations: dict[str, gtscript._FieldDescriptor] = {}
+        temp_init_values: dict[str, numbers.Number] = {}
 
         frontend_types_to_native_types = nodes.frontend_type_to_native_type(
             options.literal_int_precision
