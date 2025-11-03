@@ -36,9 +36,10 @@ import importlib.abc
 import pathlib
 import sys
 import tempfile
+from collections.abc import Generator, Iterator
 from contextlib import contextmanager
 from types import ModuleType
-from typing import Any, Generator, Iterator, List, Optional, Union
+from typing import Any
 
 
 GTS_EXTENSIONS = [".gt.py"]
@@ -76,8 +77,8 @@ class GtsFinder(importlib.abc.MetaPathFinder):
 
     def __init__(
         self,
-        search_path: Optional[List[Union[str, pathlib.Path]]] = None,
-        generate_path: Optional[Union[str, pathlib.Path]] = None,
+        search_path: list[str | pathlib.Path] | None = None,
+        generate_path: str | pathlib.Path | None = None,
         in_source: bool = False,
     ):
         if in_source:
@@ -94,7 +95,7 @@ class GtsFinder(importlib.abc.MetaPathFinder):
         return self.generate_path or src_file_path.parent
 
     def iter_search_candidates(
-        self, fullname: str, path: Optional[List[pathlib.Path]]
+        self, fullname: str, path: list[pathlib.Path] | None
     ) -> Generator[pathlib.Path, None, None]:
         """Iterate possible source file paths."""
         search_paths = [p for p in self.search_path or sys.path]
@@ -107,7 +108,7 @@ class GtsFinder(importlib.abc.MetaPathFinder):
 
     def find_spec(
         self, fullname: str, path=None, target=None
-    ) -> Optional[importlib.machinery.ModuleSpec]:
+    ) -> importlib.machinery.ModuleSpec | None:
         """Create a module spec for the first matching source file path."""
         if fullname in sys.modules:
             return None
@@ -159,7 +160,7 @@ class GtsLoader(importlib.machinery.SourceFileLoader):
     def plpath(self) -> pathlib.Path:
         return pathlib.Path(str(self.path))
 
-    def get_filename(self, fullname: Optional[str] = None) -> str:
+    def get_filename(self, fullname: str | None = None) -> str:
         """
         Generate a py module if an up to date one doesn't exist yet.
 
@@ -196,8 +197,8 @@ class GtsLoader(importlib.machinery.SourceFileLoader):
 
 def enable(
     *,
-    search_path: Optional[List[Union[str, pathlib.Path]]] = None,
-    generate_path: Optional[Union[str, pathlib.Path]] = None,
+    search_path: list[str | pathlib.Path] | None = None,
+    generate_path: str | pathlib.Path | None = None,
     in_source: bool = False,
 ) -> GtsFinder:
     """

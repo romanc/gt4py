@@ -16,7 +16,7 @@ import collections
 import inspect
 import numbers
 import types
-from typing import Callable, Dict, Type, Union
+from collections.abc import Callable
 
 import numpy as np
 
@@ -128,7 +128,7 @@ _VALID_DATA_TYPES = (
 )
 
 
-def _set_arg_dtypes(definition: Callable[..., None], dtypes: Dict[Type, Type]):
+def _set_arg_dtypes(definition: Callable[..., None], dtypes: dict[type, type]):
     def _parse_annotation(arg, annotation):
         # This function evaluates the type hint 'annotation' for the stencil argument 'arg'.
         # Note that 'typing.get_type_hints()' cannot be used here since field
@@ -199,7 +199,7 @@ def stencil(
         build_info : `dict`, optional
             Dictionary used to store information about the stencil generation.
             (`None` by default). Possible key-value pairs include:
-            - 'symbol_info': (Dict[str, SymbolInfo]) Dictionary of SymbolInfo objects
+            - 'symbol_info': (dict[str, SymbolInfo]) Dictionary of SymbolInfo objects
             - 'parse_time': (float) Frontend run time, e.g., parsing GTScript in seconds
             - 'module_time': (float) Python module generation time in seconds
             - 'codegen_time'" (float) Backend-specific code generation time in seconds
@@ -819,7 +819,7 @@ int32 = np.int32
 int64 = np.int64
 float32 = np.float32
 float64 = np.float64
-_gt_all_op_types = Union[int32, int64, float32, float64]
+_gt_all_op_types = int32 | int64 | float32 | float64
 
 
 # GTScript builtins: math functions

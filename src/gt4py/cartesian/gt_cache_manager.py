@@ -12,7 +12,7 @@ import argparse
 import os
 import pathlib
 import shutil
-from typing import List, Optional, Sequence
+from collections.abc import Sequence
 
 from gt4py.cartesian import config as gt_config
 
@@ -29,7 +29,7 @@ def _get_cache_name() -> str:
     return result
 
 
-def find_caches(root: Optional[str] = None, cache_name: Optional[str] = None) -> List[pathlib.Path]:
+def find_caches(root: str | None = None, cache_name: str | None = None) -> list[pathlib.Path]:
     root_path = pathlib.Path(root or _get_root())
     cache_name = cache_name or _get_cache_name()
 

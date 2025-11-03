@@ -12,10 +12,11 @@ import abc
 import collections.abc
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from numbers import Number
 from pickle import dumps
-from typing import Any, Callable, ClassVar, Literal, Union, cast
+from typing import Any, ClassVar, Literal, Union, cast
 
 import numpy as np
 
@@ -32,7 +33,7 @@ except ImportError:
     cupy = None
 
 FieldType = Union["cp.ndarray", np.ndarray]
-OriginType = Union[tuple[int, int, int], dict[str, tuple[int, ...]]]
+OriginType = tuple[int, int, int] | dict[str, tuple[int, ...]]
 
 
 def _compute_domain_origin_cache_key(

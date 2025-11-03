@@ -11,7 +11,7 @@ import functools
 import os
 import platform
 from dataclasses import dataclass
-from typing import Literal, Tuple, Union
+from typing import Literal
 
 import numpy
 
@@ -55,7 +55,7 @@ class AccessKind(enum.IntFlag):
 
 @dataclass(frozen=True)
 class DomainInfo:
-    parallel_axes: Tuple[str, ...]
+    parallel_axes: tuple[str, ...]
     sequential_axis: str
     min_sequential_axis_size: int
     ndim: int
@@ -65,8 +65,8 @@ class DomainInfo:
 class FieldInfo:
     access: AccessKind
     boundary: Boundary
-    axes: Tuple[str, ...]
-    data_dims: Tuple[int, ...]
+    axes: tuple[str, ...]
+    data_dims: tuple[int, ...]
     dtype: numpy.dtype
 
     def __repr__(self):
@@ -97,7 +97,7 @@ class FieldInfo:
 
 @dataclass(frozen=True)
 class ParameterInfo:
-    access: Union[Literal[AccessKind.NONE], Literal[AccessKind.READ]]
+    access: Literal[AccessKind.NONE] | Literal[AccessKind.READ]
     dtype: numpy.dtype
 
     def __repr__(self):

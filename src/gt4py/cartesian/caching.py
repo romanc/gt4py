@@ -16,7 +16,7 @@ import pathlib
 import pickle
 import sys
 import types
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any
 
 from cached_property import cached_property
 
@@ -52,12 +52,12 @@ class CachingStrategy(abc.ABC):
 
     @property
     @abc.abstractmethod
-    def cache_info_path(self) -> Optional[pathlib.Path]:
+    def cache_info_path(self) -> pathlib.Path | None:
         """Calculate the file path where caching info for the current process should be stored."""
         raise NotImplementedError
 
     @abc.abstractmethod
-    def generate_cache_info(self) -> Dict[str, Any]:
+    def generate_cache_info(self) -> dict[str, Any]:
         """
         Generate the cache info dict.
 
@@ -102,7 +102,7 @@ class CachingStrategy(abc.ABC):
 
     @property
     @abc.abstractmethod
-    def cache_info(self) -> Dict[str, Any]:
+    def cache_info(self) -> dict[str, Any]:
         """
         Read currently stored cache info from file into a dictionary.
 
@@ -151,7 +151,7 @@ class CachingStrategy(abc.ABC):
         """Calculate the name for the stencil class, default is to read from build options."""
         return self.builder.options.name
 
-    def capture_externals(self) -> Dict[str, Any]:
+    def capture_externals(self) -> dict[str, Any]:
         """Extract externals from the annotated stencil definition for fingerprinting. Freezes the references."""
         return {}
 
@@ -179,8 +179,8 @@ class JITCachingStrategy(CachingStrategy):
         self,
         builder: StencilBuilder,
         *,
-        root_path: Optional[str] = None,
-        dir_name: Optional[str] = None,
+        root_path: str | None = None,
+        dir_name: str | None = None,
     ):
         super().__init__(builder)
         self._root_path = root_path or gt_config.cache_settings["root_path"]
@@ -208,11 +208,11 @@ class JITCachingStrategy(CachingStrategy):
         return backend_root
 
     @property
-    def cache_info_path(self) -> Optional[pathlib.Path]:
+    def cache_info_path(self) -> pathlib.Path | None:
         """Get the cache info file path from the stencil module path."""
         return self.builder.module_path.parent / f"{self.builder.module_path.stem}.cacheinfo"
 
-    def generate_cache_info(self) -> Dict[str, Any]:
+    def generate_cache_info(self) -> dict[str, Any]:
         return {
             "backend": self.builder.backend.name,
             "stencil_name": self.builder.stencil_id.qualified_name,
@@ -265,7 +265,7 @@ class JITCachingStrategy(CachingStrategy):
         return result
 
     @property
-    def cache_info(self) -> Dict[str, Any]:
+    def cache_info(self) -> dict[str, Any]:
         if not self.cache_info_path:
             return {}
         if not self.cache_info_path.exists():
@@ -273,7 +273,7 @@ class JITCachingStrategy(CachingStrategy):
         return self._unpickle_cache_info_file(self.cache_info_path)
 
     @staticmethod
-    def _unpickle_cache_info_file(cache_info_path: pathlib.Path) -> Dict[str, Any]:
+    def _unpickle_cache_info_file(cache_info_path: pathlib.Path) -> dict[str, Any]:
         with cache_info_path.open("rb") as cache_info_file:
             return pickle.load(cache_info_file)
 
@@ -283,19 +283,19 @@ class JITCachingStrategy(CachingStrategy):
             return self.builder.backend.filter_options_for_id(self.builder.options).shashed_id
         return self.builder.options.shashed_id
 
-    def capture_externals(self) -> Dict[str, Any]:
+    def capture_externals(self) -> dict[str, Any]:
         """Extract externals from the annotated stencil definition for fingerprinting."""
         return self._externals
 
     @cached_property
-    def _externals(self) -> Dict[str, Any]:
+    def _externals(self) -> dict[str, Any]:
         """Extract externals from the annotated stencil definition for fingerprinting."""
         return {
             name: value._gtscript_["canonical_ast"] if hasattr(value, "_gtscript_") else value
             for name, value in self.builder.definition._gtscript_["externals"].items()
         }
 
-    def _extract_api_annotations(self) -> List[str]:
+    def _extract_api_annotations(self) -> list[str]:
         """Extract API annotations from the annotated stencil definition for fingerprinting."""
         return [str(item) for item in self.builder.definition._gtscript_["api_annotations"]]
 
@@ -386,10 +386,10 @@ class NoCachingStrategy(CachingStrategy):
         return self.root_path
 
     @property
-    def cache_info_path(self) -> Optional[pathlib.Path]:
+    def cache_info_path(self) -> pathlib.Path | None:
         return None
 
-    def generate_cache_info(self) -> Dict[str, Any]:
+    def generate_cache_info(self) -> dict[str, Any]:
         return {}
 
     def update_cache_info(self) -> None:
@@ -399,7 +399,7 @@ class NoCachingStrategy(CachingStrategy):
         return False
 
     @property
-    def cache_info(self) -> Dict[str, Any]:
+    def cache_info(self) -> dict[str, Any]:
         return {}
 
     @property
