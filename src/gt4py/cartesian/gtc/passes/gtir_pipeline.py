@@ -6,7 +6,8 @@
 # Please, refer to the LICENSE file in the root directory.
 # SPDX-License-Identifier: BSD-3-Clause
 
-from typing import Callable, ClassVar, Dict, Optional, Sequence, Tuple
+from collections.abc import Callable, Sequence
+from typing import ClassVar
 
 from gt4py.cartesian.definitions import StencilID
 from gt4py.cartesian.gtc import gtir
@@ -29,7 +30,7 @@ class GtirPipeline:
     """
 
     # Cache pipelines across all instances
-    _cache: ClassVar[Dict[Tuple[StencilID, Tuple[PASS_T, ...]], gtir.Stencil]] = {}
+    _cache: ClassVar[dict[tuple[StencilID, tuple[PASS_T, ...]], gtir.Stencil]] = {}
 
     def __init__(self, node: gtir.Stencil, stencil_id: StencilID):
         self.gtir = node
@@ -48,13 +49,13 @@ class GtirPipeline:
             result = step(result)
         return result
 
-    def _get_cached(self, steps: Sequence[PASS_T]) -> Optional[gtir.Stencil]:
+    def _get_cached(self, steps: Sequence[PASS_T]) -> gtir.Stencil | None:
         return self._cache.get((self.stencil_id, tuple(steps)))
 
     def _set_cached(self, steps: Sequence[PASS_T], node: gtir.Stencil) -> gtir.Stencil:
         return self._cache.setdefault((self.stencil_id, tuple(steps)), node)
 
-    def full(self, skip: Optional[Sequence[PASS_T]] = None) -> gtir.Stencil:
+    def full(self, skip: Sequence[PASS_T] | None = None) -> gtir.Stencil:
         skip = skip or []
         pipeline = [step for step in self.steps() if step not in skip]
         return self._get_cached(pipeline) or self._set_cached(pipeline, self.apply(pipeline))

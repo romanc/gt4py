@@ -6,18 +6,16 @@
 # Please, refer to the LICENSE file in the root directory.
 # SPDX-License-Identifier: BSD-3-Clause
 
-from typing import Optional, Tuple
-
 from gt4py.cartesian.gtc import common
 from gt4py.cartesian.gtc.definitions import Extent
 
 
 def _overlap_along_axis(
-    extent: Tuple[int, int], interval: common.HorizontalInterval
-) -> Optional[Tuple[int, int]]:
+    extent: tuple[int, int], interval: common.HorizontalInterval
+) -> tuple[int, int] | None:
     """Return a tuple of the distances to the edge of the compute domain, if overlapping."""
-    start_diff: Optional[int]
-    end_diff: Optional[int]
+    start_diff: int | None
+    end_diff: int | None
 
     if interval.start is None:
         start_diff = 1000
@@ -49,7 +47,7 @@ def _overlap_along_axis(
 
 def mask_overlap_with_extent(
     mask: common.HorizontalMask, horizontal_extent: Extent
-) -> Optional[Extent]:
+) -> Extent | None:
     """Compute an overlap extent between a mask and horizontal extent."""
     diffs = [
         _overlap_along_axis(ext, interval)
@@ -59,11 +57,9 @@ def mask_overlap_with_extent(
 
 
 def _compute_relative_interval(
-    extent: Tuple[int, int], interval: common.HorizontalInterval
-) -> Optional[Tuple[common.AxisBound, common.AxisBound]]:
-    def _offset(
-        extent: Tuple[int, int], bound: Optional[common.AxisBound], start: bool = True
-    ) -> int:
+    extent: tuple[int, int], interval: common.HorizontalInterval
+) -> tuple[common.AxisBound, common.AxisBound] | None:
+    def _offset(extent: tuple[int, int], bound: common.AxisBound | None, start: bool = True) -> int:
         if bound:
             if start:
                 if bound.level == common.LevelMarker.START:
@@ -97,9 +93,10 @@ def _compute_relative_interval(
 
 def compute_relative_mask(
     extent: Extent, mask: common.HorizontalMask
-) -> Optional[
-    Tuple[Tuple[common.AxisBound, common.AxisBound], Tuple[common.AxisBound, common.AxisBound]]
-]:
+) -> (
+    tuple[tuple[common.AxisBound, common.AxisBound], tuple[common.AxisBound, common.AxisBound]]
+    | None
+):
     """
     Output a HorizontalMask that is relative to and always inside the extent instead of the compute domain.
 

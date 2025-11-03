@@ -15,7 +15,7 @@ e.g. stage merging, staged computations to compute-on-the-fly, cache annotations
 
 from __future__ import annotations
 
-from typing import Any, List, Optional, Tuple, Type, Union
+from typing import Any
 
 from gt4py import eve
 from gt4py.cartesian.gtc import common
@@ -68,10 +68,10 @@ class FieldAccess(common.FieldAccess[Expr, VariableKOffset], Expr):
     pass
 
 
-class AssignStmt(common.AssignStmt[Union[ScalarAccess, FieldAccess], Expr], Stmt):
+class AssignStmt(common.AssignStmt[ScalarAccess | FieldAccess, Expr], Stmt):
     @datamodels.validator("left")
     def no_horizontal_offset_in_assignment(
-        self, attribute: datamodels.Attribute, value: Union[ScalarAccess, FieldAccess]
+        self, attribute: datamodels.Attribute, value: ScalarAccess | FieldAccess
     ) -> None:
         if isinstance(value, FieldAccess):
             offsets = value.offset.to_dict()
@@ -83,7 +83,7 @@ class AssignStmt(common.AssignStmt[Union[ScalarAccess, FieldAccess], Expr], Stmt
 
 class MaskStmt(Stmt):
     mask: Expr
-    body: List[Stmt]
+    body: list[Stmt]
 
     @datamodels.validator("mask")
     def mask_is_boolean_field_expr(self, attribute: datamodels.Attribute, v: Expr) -> None:
@@ -130,8 +130,8 @@ class Decl(LocNode):
 
 
 class FieldDecl(Decl):
-    dimensions: Tuple[bool, bool, bool]
-    data_dims: Tuple[int, ...] = eve.field(default_factory=tuple)
+    dimensions: tuple[bool, bool, bool]
+    data_dims: tuple[int, ...] = eve.field(default_factory=tuple)
 
 
 class ScalarDecl(Decl):
@@ -146,7 +146,7 @@ class Temporary(FieldDecl):
     pass
 
 
-def _check_interval(instance: Union[Interval, UnboundedInterval]) -> None:
+def _check_interval(instance: Interval | UnboundedInterval) -> None:
     start, end = instance.start, instance.end
     if (
         start is not None
@@ -173,7 +173,7 @@ class Interval(LocNode):
 
     @datamodels.root_validator
     @classmethod
-    def check(cls: Type[Interval], instance: Interval) -> None:
+    def check(cls: type[Interval], instance: Interval) -> None:
         _check_interval(instance)
 
     def covers(self, other: Interval) -> bool:
@@ -184,7 +184,7 @@ class Interval(LocNode):
     def intersects(self, other: Interval) -> bool:
         return not (other.start >= self.end or self.start >= other.end)
 
-    def shifted(self, offset: Optional[int]) -> Union[Interval, UnboundedInterval]:
+    def shifted(self, offset: int | None) -> Interval | UnboundedInterval:
         if offset is None:
             return UnboundedInterval()
         start = AxisBound(level=self.start.level, offset=self.start.offset + offset)
@@ -197,15 +197,15 @@ class Interval(LocNode):
 
 
 class UnboundedInterval:
-    start: Optional[AxisBound] = None
-    end: Optional[AxisBound] = None
+    start: AxisBound | None = None
+    end: AxisBound | None = None
 
     @datamodels.root_validator
     @classmethod
-    def check(cls: Type[UnboundedInterval], instance: UnboundedInterval) -> None:
+    def check(cls: type[UnboundedInterval], instance: UnboundedInterval) -> None:
         _check_interval(instance)
 
-    def covers(self, other: Union[Interval, UnboundedInterval]) -> bool:
+    def covers(self, other: Interval | UnboundedInterval) -> bool:
         if self.start is None and self.end is None:
             return True
         if (
@@ -230,7 +230,7 @@ class UnboundedInterval:
         assert isinstance(other, Interval)
         return Interval(start=self.start, end=self.end).covers(other)
 
-    def intersects(self, other: Union[Interval, UnboundedInterval]) -> bool:
+    def intersects(self, other: Interval | UnboundedInterval) -> bool:
         no_overlap_high = (
             self.end is not None and other.start is not None and other.start >= self.end
         )
@@ -239,7 +239,7 @@ class UnboundedInterval:
         )
         return not (no_overlap_low or no_overlap_high)
 
-    def shifted(self, offset: Optional[int]) -> UnboundedInterval:
+    def shifted(self, offset: int | None) -> UnboundedInterval:
         if offset is None:
             return UnboundedInterval()
 
@@ -261,8 +261,8 @@ class UnboundedInterval:
 
 
 class HorizontalExecution(LocNode, eve.SymbolTableTrait):
-    body: List[Stmt]
-    declarations: List[LocalScalar]
+    body: list[Stmt]
+    declarations: list[LocalScalar]
 
 
 class CacheDesc(LocNode):
@@ -280,22 +280,22 @@ class KCache(CacheDesc):
 
 class VerticalLoopSection(LocNode):
     interval: Interval
-    horizontal_executions: List[HorizontalExecution]
+    horizontal_executions: list[HorizontalExecution]
 
 
 class VerticalLoop(LocNode):
     loop_order: common.LoopOrder
-    sections: List[VerticalLoopSection]
-    caches: List[CacheDesc] = eve.field(default_factory=list)
+    sections: list[VerticalLoopSection]
+    caches: list[CacheDesc] = eve.field(default_factory=list)
 
     @datamodels.validator("sections")
-    def nonempty_loop(self, attribute: datamodels.Attribute, v: List[VerticalLoopSection]) -> None:
+    def nonempty_loop(self, attribute: datamodels.Attribute, v: list[VerticalLoopSection]) -> None:
         if not v:
             raise ValueError("Empty vertical loop is not allowed")
 
     @datamodels.root_validator
     @classmethod
-    def valid_section_intervals(cls: Type[VerticalLoop], instance: VerticalLoop) -> None:
+    def valid_section_intervals(cls: type[VerticalLoop], instance: VerticalLoop) -> None:
         starts, ends = zip(*((s.interval.start, s.interval.end) for s in instance.sections))
         if instance.loop_order == common.LoopOrder.BACKWARD:
             starts, ends = starts[:-1], ends[1:]
@@ -311,10 +311,10 @@ class VerticalLoop(LocNode):
 
 class Stencil(LocNode, eve.ValidatedSymbolTableTrait):
     name: str
-    # TODO: fix to be List[Union[ScalarDecl, FieldDecl]]
-    params: List[Decl]
-    vertical_loops: List[VerticalLoop]
-    declarations: List[Temporary]
+    # TODO: fix to be list[ScalarDecl | FieldDecl]
+    params: list[Decl]
+    vertical_loops: list[VerticalLoop]
+    declarations: list[Temporary]
 
     _validate_dtype_is_set = common.validate_dtype_is_set()
     _validate_lvalue_dims = common.validate_lvalue_dims(VerticalLoop, FieldDecl)
