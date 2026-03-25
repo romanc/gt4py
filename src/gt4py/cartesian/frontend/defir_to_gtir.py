@@ -10,7 +10,7 @@ import copy
 import functools
 import itertools
 import numbers
-from typing import Any, Dict, Final, List, Optional, Tuple, Union, cast
+from typing import Dict, Final, List, Optional, Tuple, Union, cast
 
 import numpy as np
 
@@ -377,9 +377,11 @@ class DefIRToGTIR(IRNodeVisitor):
         return cls().visit(root)
 
     def visit_StencilDefinition(self, node: StencilDefinition) -> gtir.Stencil:
-        field_params = {f.name: self.visit(f) for f in node.api_fields}
-        scalar_params = {p.name: self.visit(p) for p in node.parameters}
-        vertical_loops = [self.visit(c) for c in node.computations if c.body.stmts]
+        field_params = {field.name: self.visit(field) for field in node.api_fields}
+        scalar_params = {parameter.name: self.visit(parameter) for parameter in node.parameters}
+        vertical_loops = [
+            self.visit(computation) for computation in node.computations if computation.body.stmts
+        ]
         externals = {
             name: _make_literal(value)
             for name, value in (node.externals or {}).items()
@@ -411,22 +413,25 @@ class DefIRToGTIR(IRNodeVisitor):
         return all_params[node.name]
 
     def visit_ComputationBlock(self, node: ComputationBlock) -> gtir.VerticalLoop:
-        stmts = []
+        statements = []
         temporaries = []
-        for s in node.body.stmts:
-            decl_or_stmt = self.visit(s)
-            if isinstance(decl_or_stmt, gtir.Decl):
-                temporaries.append(decl_or_stmt)
+
+        for statement in node.body.stmts:
+            declaration_or_statement = self.visit(statement)
+            if isinstance(declaration_or_statement, gtir.Decl):
+                temporaries.append(declaration_or_statement)
             else:
-                stmts.append(decl_or_stmt)
+                statements.append(declaration_or_statement)
+
         start, end = self.visit(node.interval)
         interval = gtir.Interval(
             start=start, end=end, loc=location_to_source_location(node.interval.loc)
         )
+
         return gtir.VerticalLoop(
             interval=interval,
             loop_order=self.GT4PY_ITERATIONORDER_TO_GTIR_LOOPORDER[node.iteration_order],
-            body=stmts,
+            body=statements,
             temporaries=temporaries,
             loc=location_to_source_location(node.loc),
         )
@@ -438,7 +443,7 @@ class DefIRToGTIR(IRNodeVisitor):
         )
 
     def visit_BlockStmt(self, node: BlockStmt) -> List[gtir.Stmt]:
-        return [self.visit(s) for s in node.stmts]
+        return [self.visit(statement) for statement in node.stmts]
 
     def visit_Assign(self, node: Assign) -> gtir.ParAssignStmt:
         assert isinstance(node.target, FieldRef) or isinstance(node.target, VarRef)
@@ -604,16 +609,16 @@ class DefIRToGTIR(IRNodeVisitor):
         )
 
     def transform_offset(
-        self, offset: dict[str, int | Expr | AbsoluteKIndex], **kwargs: Any
+        self, offset: dict[str, int | Expr | AbsoluteKIndex]
     ) -> common.CartesianOffset | gtir.VariableKOffset | gtir.AbsoluteKIndex:
         if isinstance(offset, AbsoluteKIndex):
-            return gtir.AbsoluteKIndex(k=self.visit(offset.k, **kwargs))
+            return gtir.AbsoluteKIndex(k=self.visit(offset.k))
 
         k_val = offset.get("K", 0)
         if isinstance(k_val, numbers.Integral):
             return common.CartesianOffset(i=offset.get("I", 0), j=offset.get("J", 0), k=k_val)
 
         if isinstance(k_val, Expr):
-            return gtir.VariableKOffset(k=self.visit(k_val, **kwargs))
+            return gtir.VariableKOffset(k=self.visit(k_val))
 
         raise TypeError("Unrecognized vertical offset type.")

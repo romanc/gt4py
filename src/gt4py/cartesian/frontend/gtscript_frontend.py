@@ -2459,9 +2459,13 @@ class GTScriptParser(ast.NodeVisitor):
             loc=nodes.Location.from_ast_node(self.ast_root.body[0]),
         )
 
+        # kill this?
         self.definition_ir = UnrollVectorAssignments.apply(
             self.definition_ir, fields_decls=fields_decls
         )
+
+        # checker for FieldRef check against `field_decls` (and `temp_decls`)
+        # to make sure that data dimensions are accessed correctly.
         return self.definition_ir
 
 
