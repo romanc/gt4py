@@ -10,18 +10,13 @@ import operator
 import warnings
 from dataclasses import dataclass
 from functools import reduce
-from typing import Any, Final
+from typing import Any
 
 from dace import Memlet, nodes, subsets
 
 from gt4py import eve
 from gt4py.cartesian.gtc import common, oir
 from gt4py.cartesian.gtc.dace import treeir as tir, utils
-
-
-# Tasklet in/out connector prefixes
-TASKLET_IN: Final[str] = "gtIN_"
-TASKLET_OUT: Final[str] = "gtOUT_"
 
 
 @dataclass
@@ -53,6 +48,11 @@ class OIRToTasklet(eve.NodeVisitor):
     work. Control flow is the responsibility of OIRToTreeIR.
     """
 
+    def __init__(self, *, in_prefix: str | None = None, out_prefix: str | None = None) -> None:
+        # Tasklet in/out connector prefixes
+        self.in_prefix = "gtIN_" if in_prefix is None else in_prefix
+        self.out_prefix = "gtOUT_" if out_prefix is None else out_prefix
+
     def visit_CodeBlock(
         self, node: oir.CodeBlock, root: tir.TreeRoot, scope: tir.TreeScope
     ) -> tuple[nodes.Tasklet, dict[str, Memlet], dict[str, Memlet]]:
@@ -72,7 +72,8 @@ class OIRToTasklet(eve.NodeVisitor):
 
     def visit_ScalarAccess(self, node: oir.ScalarAccess, ctx: Context, is_target: bool) -> str:
         target = is_target or node.name in ctx.targets
-        tasklet_name = _tasklet_name(node, target)
+        prefix = self.out_prefix if target else self.in_prefix
+        tasklet_name = _tasklet_name(node, prefix)
 
         if (
             node.name in ctx.targets  # (read or write) after write
@@ -97,7 +98,8 @@ class OIRToTasklet(eve.NodeVisitor):
         postfix = _field_offset_postfix(node)
         key = f"{node.name}_{postfix}"
         target = is_target or key in ctx.targets
-        tasklet_name = _tasklet_name(node, target, postfix)
+        prefix = self.out_prefix if target else self.in_prefix
+        tasklet_name = _tasklet_name(node, prefix, postfix)
 
         # Gather all parts of the variable name in this list
         name_parts = [tasklet_name]
@@ -353,11 +355,8 @@ class OIRToTasklet(eve.NodeVisitor):
         raise RuntimeError("visit_VerticalLoopSection should not be called")
 
 
-def _tasklet_name(
-    node: oir.FieldAccess | oir.ScalarAccess, is_target: bool, postfix: str = ""
-) -> str:
-    name_prefix = TASKLET_OUT if is_target else TASKLET_IN
-    return "_".join(filter(None, [name_prefix, node.name, postfix]))
+def _tasklet_name(node: oir.FieldAccess | oir.ScalarAccess, prefix: str, postfix: str = "") -> str:
+    return "_".join(filter(None, [prefix, node.name, postfix]))
 
 
 def _field_offset_postfix(node: oir.FieldAccess) -> str:

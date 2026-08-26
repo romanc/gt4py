@@ -34,23 +34,23 @@ def test__field_offset_postfix(node: oir.FieldAccess, expected: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "node,is_target,postfix,expected",
+    "node,prefix,postfix,expected",
     [
-        (oir.ScalarAccess(name="A"), False, "", "gtIN__A"),
-        (oir.ScalarAccess(name="A"), True, "", "gtOUT__A"),
-        (oir.ScalarAccess(name="A"), False, "im1", "gtIN__A_im1"),
+        (oir.ScalarAccess(name="A"), "gtIN_", "", "gtIN__A"),
+        (oir.ScalarAccess(name="A"), "gtOUT_", "", "gtOUT__A"),
+        (oir.ScalarAccess(name="A"), "gtIN_", "im1", "gtIN__A_im1"),
         (
             oir.FieldAccess(name="A", offset=common.CartesianOffset(i=1, j=-1, k=0)),
-            True,
+            "gtOUT_",
             "",
             "gtOUT__A",
         ),
     ],
 )
 def test__tasklet_name(
-    node: oir.FieldAccess | oir.ScalarAccess, is_target: bool, postfix: str, expected: str
+    node: oir.FieldAccess | oir.ScalarAccess, prefix: str, postfix: str, expected: str
 ) -> None:
-    assert oir_to_tasklet._tasklet_name(node, is_target, postfix) == expected
+    assert oir_to_tasklet._tasklet_name(node, prefix, postfix) == expected
 
 
 @pytest.mark.parametrize(
