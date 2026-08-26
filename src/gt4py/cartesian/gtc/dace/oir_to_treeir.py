@@ -110,31 +110,6 @@ class OIRToTreeIR(eve.NodeVisitor):
 
         return groups
 
-    def _insert_evaluation_tasklet(
-        self, node: oir.MaskStmt | oir.While, ctx: tir.Context
-    ) -> tuple[str, oir.AssignStmt]:
-        """Evaluate condition in a separate tasklet to avoid sympy problems down the line."""
-
-        prefix = "while" if isinstance(node, oir.While) else "if"
-        condition_name = f"{prefix}_condition_{id(node)}"
-
-        ctx.root.containers[condition_name] = data.Scalar(
-            utils.data_type_to_dace_typeclass(common.DataType.BOOL),
-            transient=True,
-            storage=dtypes.StorageType.Register,
-            debuginfo=utils.get_dace_debuginfo(node),
-        )
-
-        assignment = oir.AssignStmt(
-            left=oir.ScalarAccess(name=condition_name),
-            right=node.cond if isinstance(node, oir.While) else node.mask,
-        )
-
-        code_block = oir.CodeBlock(label=f"masklet_{id(node)}", body=[assignment])
-        self.visit(code_block, ctx=ctx)
-
-        return (condition_name, assignment)
-
     def visit_HorizontalExecution(self, node: oir.HorizontalExecution, ctx: tir.Context) -> None:
         block_extent = ctx.block_extents[id(node)]
 
@@ -165,13 +140,14 @@ class OIRToTreeIR(eve.NodeVisitor):
             self.visit(groups, ctx=ctx)
 
     def visit_MaskStmt(self, node: oir.MaskStmt, ctx: tir.Context) -> None:
-        if isinstance(node.mask, oir.ScalarAccess) and node.mask.dtype == common.DataType.BOOL:
-            condition_name = str(node.mask.name)
-        else:
-            condition_name, _ = self._insert_evaluation_tasklet(node, ctx)
+        # Use a temporary CodeBlock & Tasklet to render `node.mask` into a string of python code
+        tmp_code_block = oir.CodeBlock(label="tmp", body=[node.mask])
+        tasklet, _, _ = oir_to_tasklet.OIRToTasklet().visit_CodeBlock(
+            tmp_code_block, root=ctx.root, scope=ctx.current_scope
+        )
 
         if_else = tir.IfElse(
-            if_condition_code=condition_name, children=[], parent=ctx.current_scope
+            if_condition_code=tasklet.code.as_string(), children=[], parent=ctx.current_scope
         )
 
         with if_else.scope(ctx):
@@ -221,16 +197,15 @@ class OIRToTreeIR(eve.NodeVisitor):
         return " and ".join(conditions)
 
     def visit_While(self, node: oir.While, ctx: tir.Context) -> None:
-        if isinstance(node.cond, oir.ScalarAccess) and node.cond.dtype == common.DataType.BOOL:
-            condition_name = str(node.cond.name)
-        else:
-            condition_name, assignment = self._insert_evaluation_tasklet(node, ctx)
-            # Re-evaluate the condition as last step of the while loop
-            node.body.append(assignment)
+        # Use a temporary CodeBlock & Tasklet to render `node.cond` into a string of python code
+        tmp_code_block = oir.CodeBlock(label="tmp", body=[node.cond])
+        tasklet, _, _ = oir_to_tasklet.OIRToTasklet().visit_CodeBlock(
+            tmp_code_block, root=ctx.root, scope=ctx.current_scope
+        )
 
         # Use the mask created for conditional check
         while_ = tir.While(
-            condition_code=condition_name,
+            condition_code=tasklet.code.as_string(),
             children=[],
             parent=ctx.current_scope,
         )
